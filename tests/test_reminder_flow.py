@@ -35,6 +35,11 @@ async def test_send_task_reminder_escalation_after_snoozes(mock_bot, config):
     await send_task_reminder(mock_bot, task, config)
     kwargs = mock_bot.send_message.call_args.kwargs
     assert "откладывалась" in kwargs["text"]
+    # escalation keyboard has escalate: prefix buttons
+    markup = kwargs["reply_markup"]
+    assert markup is not None
+    first_button = markup.inline_keyboard[0][0]
+    assert first_button.callback_data.startswith("escalate:")
 
 
 @pytest.mark.asyncio

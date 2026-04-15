@@ -61,3 +61,68 @@ async def test_task_reminder_job_skips_missing_task(mock_bot, config):
             config=config,
         )
         mock_send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_task_reminder_job_skips_snoozed_task(mock_bot, config):
+    from datetime import timedelta
+    future = datetime.now(timezone.utc) + timedelta(hours=2)
+    task = make_task(snoozed_until=future)
+    mock_repo = MagicMock()
+    mock_repo.get = AsyncMock(return_value=task)
+
+    with patch("bot.scheduler.jobs.send_task_reminder", AsyncMock()) as mock_send:
+        await task_reminder_job(
+            task_id=task.id,
+            bot=mock_bot,
+            task_repo=mock_repo,
+            config=config,
+        )
+        mock_send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_doc_check_job_sends_alert_for_upcoming_event(mock_bot, config):
+    from bot.db.models import WatchedSource
+    from bot.llm.doc_analyzer import DocEvent
+    from datetime import date, timedelta
+
+    source = WatchedSource(owner_id=1, chat_id=100, url="https://docs.google.com/document/d/abc", source_type="google_doc")
+    mock_source_repo = MagicMock()
+    mock_source_repo.list_all = AsyncMock(return_value=[source])
+    mock_source_repo.update_last_checked = AsyncMock()
+
+    # Event 2 days away with lead=3 → should trigger
+    upcoming = date.today() + timedelta(days=2)
+    events = [DocEvent(title="Pay bill", date=upcoming, reminder_lead_days=3, notes=None)]
+
+    mock_llm = MagicMock()
+
+    with patch("bot.scheduler.jobs.fetch_doc_content", AsyncMock(return_value="doc content")), \
+         patch("bot.scheduler.jobs.analyze_doc", AsyncMock(return_value=events)), \
+         patch("bot.scheduler.jobs.send_event_alert", AsyncMock()) as mock_alert:
+        await doc_check_job(
+            source_id=source.id,
+            bot=mock_bot,
+            source_repo=mock_source_repo,
+            llm_client=mock_llm,
+            config=config,
+        )
+        mock_alert.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_doc_check_job_skips_missing_source(mock_bot, config):
+    mock_source_repo = MagicMock()
+    mock_source_repo.list_all = AsyncMock(return_value=[])
+    mock_llm = MagicMock()
+
+    with patch("bot.scheduler.jobs.send_event_alert", AsyncMock()) as mock_alert:
+        await doc_check_job(
+            source_id="nonexistent",
+            bot=mock_bot,
+            source_repo=mock_source_repo,
+            llm_client=mock_llm,
+            config=config,
+        )
+        mock_alert.assert_not_called()

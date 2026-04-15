@@ -24,6 +24,9 @@ async def task_reminder_job(
         return
     if task.status in (TaskStatus.DONE, TaskStatus.CANCELLED, TaskStatus.ACTIVE):
         return
+    now = datetime.now(timezone.utc)
+    if task.snoozed_until and task.snoozed_until > now:
+        return
     await send_task_reminder(bot, task, config)
 
 
