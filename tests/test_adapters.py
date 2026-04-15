@@ -50,3 +50,28 @@ async def test_google_doc_adapter_fetch():
     assert len(tasks) == 1
     assert tasks[0].source == "google_doc"
     assert "docs.google.com" in tasks[0].source_ref
+
+
+@pytest.mark.asyncio
+async def test_md_file_adapter_sets_source_ref():
+    json_str = '[{"title":"T","notes":null,"priority":"medium","due_at":null,"remind_at":"2026-04-17T09:00:00+00:00","recurrence":null}]'
+    client = make_mock_client(json_str)
+    adapter = MdFileAdapter(client)
+    tasks = await adapter.extract("content", filename="health.md")
+    assert tasks[0].source_ref == "health.md"
+
+
+@pytest.mark.asyncio
+async def test_fetch_doc_content_raises_on_bad_url():
+    from bot.adapters.google_doc import fetch_doc_content
+    with pytest.raises(ValueError, match="Cannot extract doc ID"):
+        await fetch_doc_content("https://example.com/not-a-doc")
+
+
+@pytest.mark.asyncio
+async def test_google_doc_adapter_propagates_fetch_error():
+    client = make_mock_client("[]")
+    with patch("bot.adapters.google_doc.fetch_doc_content", AsyncMock(side_effect=ValueError("HTTP 403"))):
+        adapter = GoogleDocAdapter(client)
+        with pytest.raises(ValueError):
+            await adapter.extract("https://docs.google.com/document/d/abc/edit")
