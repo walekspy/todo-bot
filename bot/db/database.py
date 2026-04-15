@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 
 async def create_tables(conn: aiosqlite.Connection) -> None:
+    conn.row_factory = aiosqlite.Row
     await conn.execute("PRAGMA foreign_keys = ON")
     await conn.execute(CREATE_TASKS_TABLE)
     await conn.execute(CREATE_WATCHED_SOURCES_TABLE)
