@@ -1,5 +1,7 @@
 import aiosqlite
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import AsyncIterator
 
 
 CREATE_TASKS_TABLE = """
@@ -7,8 +9,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
     notes TEXT,
-    status TEXT NOT NULL DEFAULT 'pending',
-    priority TEXT NOT NULL DEFAULT 'medium',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','active','done','cancelled')),
+    priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('low','medium','high')),
     source TEXT NOT NULL DEFAULT 'manual',
     source_ref TEXT,
     due_at TEXT,
@@ -48,15 +50,17 @@ CREATE TABLE IF NOT EXISTS users (
 
 
 async def create_tables(conn: aiosqlite.Connection) -> None:
+    await conn.execute("PRAGMA foreign_keys = ON")
     await conn.execute(CREATE_TASKS_TABLE)
     await conn.execute(CREATE_WATCHED_SOURCES_TABLE)
     await conn.execute(CREATE_USERS_TABLE)
     await conn.commit()
 
 
-async def get_connection(db_path: Path) -> aiosqlite.Connection:
+@asynccontextmanager
+async def get_connection(db_path: Path) -> AsyncIterator[aiosqlite.Connection]:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = await aiosqlite.connect(str(db_path))
-    conn.row_factory = aiosqlite.Row
-    await create_tables(conn)
-    return conn
+    async with aiosqlite.connect(str(db_path)) as conn:
+        conn.row_factory = aiosqlite.Row
+        await create_tables(conn)
+        yield conn

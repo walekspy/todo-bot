@@ -16,7 +16,7 @@ def test_task_defaults():
     assert task.snooze_count == 0
     assert task.is_family is False
     assert task.id is not None
-    assert len(task.id) == 36  # UUID format
+    assert len(task.id) == 36
 
 
 def test_task_with_all_fields():
@@ -38,16 +38,22 @@ def test_task_with_all_fields():
     assert task.assignee_id == 333
 
 
-def test_watched_source_fields():
+def test_watched_source_defaults():
     src = WatchedSource(
-        id="abc",
         owner_id=123,
         chat_id=456,
         url="https://docs.google.com/document/d/abc",
         source_type="google_doc",
-        last_checked=None,
-        reminder_lead_days=3,
-        created_at=datetime(2026, 4, 15, tzinfo=timezone.utc),
     )
     assert src.source_type == "google_doc"
     assert src.reminder_lead_days == 3
+    assert src.id is not None
+    assert len(src.id) == 36
+    assert src.last_checked is None
+
+
+def test_user_defaults():
+    user = User(telegram_id=999)
+    assert user.username is None
+    assert user.family_chat_id is None
+    assert user.created_at is not None
