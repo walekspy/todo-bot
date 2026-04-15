@@ -13,11 +13,12 @@ Return a JSON array (and nothing else) where each item has:
 - title: string (concise task name)
 - notes: string or null (extra context)
 - priority: "low" | "medium" | "high"
-- due_at: ISO8601 datetime string or null
-- remind_at: ISO8601 datetime string or null (when to send the reminder)
+- due_at: ISO8601 datetime string with UTC offset (e.g. 2026-04-16T09:00:00+00:00) or null
+- remind_at: ISO8601 datetime string with UTC offset or null (when to send the reminder)
 - recurrence: cron string or null (e.g. "0 9 * * *" for daily 9am)
 
 If remind_at is not clear from context, set it to tomorrow at 09:00 UTC.
+All datetimes MUST include a UTC offset (+00:00).
 Today is {today}. Return only the JSON array, no markdown."""
 
 
@@ -33,14 +34,19 @@ async def extract_tasks(
     try:
         response = await client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=1024,
+            max_tokens=2048,
             system=system,
             messages=[{"role": "user", "content": text}],
         )
+    except anthropic.APIError as e:
+        logger.error("extract_tasks: Claude API error: %s", e)
+        raise
+
+    try:
         raw_json = response.content[0].text.strip()
         items = json.loads(raw_json)
-    except (json.JSONDecodeError, IndexError, Exception) as e:
-        logger.warning("extract_tasks failed to parse LLM response: %s", e)
+    except (json.JSONDecodeError, IndexError) as e:
+        logger.warning("extract_tasks: unparseable LLM response: %s", e)
         return []
 
     tasks = []

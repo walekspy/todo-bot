@@ -1,7 +1,7 @@
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, date
+from datetime import date
 from typing import Optional
 import anthropic
 
@@ -44,16 +44,22 @@ async def analyze_doc(
             system=ANALYZE_DOC_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": content}],
         )
+    except anthropic.APIError as e:
+        logger.error("analyze_doc: Claude API error: %s", e)
+        raise
+
+    try:
         raw_json = response.content[0].text.strip()
         items = json.loads(raw_json)
-    except (json.JSONDecodeError, Exception) as e:
-        logger.warning("analyze_doc failed: %s", e)
+    except (json.JSONDecodeError, IndexError) as e:
+        logger.warning("analyze_doc: unparseable LLM response: %s", e)
         return []
 
     events = []
     for item in items:
         try:
-            lead = reminder_lead_days_hint or item.get("reminder_lead_days", 3)
+            # Use hint if explicitly provided (even 0 is valid), else use LLM value
+            lead = item.get("reminder_lead_days", 3) if reminder_lead_days_hint is None else reminder_lead_days_hint
             events.append(
                 DocEvent(
                     title=item["title"],
