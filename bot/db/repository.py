@@ -1,8 +1,7 @@
 import aiosqlite
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 from bot.db.models import Task, TaskStatus, Priority, WatchedSource, User
-import uuid
 
 
 def _parse_dt(s: Optional[str]) -> Optional[datetime]:
@@ -78,14 +77,16 @@ class TaskRepo:
     async def list_due(self, as_of: datetime) -> list[Task]:
         async with self.conn.execute(
             """SELECT * FROM tasks
-               WHERE remind_at <= ? AND status = 'pending'
+               WHERE remind_at <= ?
+                 AND status = 'pending'
+                 AND (snoozed_until IS NULL OR snoozed_until <= ?)
                ORDER BY remind_at""",
-            (_fmt_dt(as_of),),
+            (_fmt_dt(as_of), _fmt_dt(as_of)),
         ) as cursor:
             return [_row_to_task(r) for r in await cursor.fetchall()]
 
     async def list_today(self, chat_id: int, date_str: str) -> list[Task]:
-        """date_str format: '2026-04-20'"""
+        """Return non-done tasks for chat_id whose remind_at falls on date_str (UTC, format: YYYY-MM-DD)."""
         async with self.conn.execute(
             """SELECT * FROM tasks
                WHERE chat_id = ? AND remind_at LIKE ? AND status NOT IN ('done','cancelled')

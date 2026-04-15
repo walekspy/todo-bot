@@ -24,6 +24,7 @@ def config():
 async def db():
     """In-memory SQLite database with schema applied."""
     async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
         from bot.db.database import create_tables
         await create_tables(conn)
         yield conn
