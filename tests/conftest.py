@@ -1,7 +1,7 @@
 import pytest
 import pytest_asyncio
 import aiosqlite
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from bot.config import Config
 from pathlib import Path
 
@@ -39,7 +39,6 @@ def mock_bot():
 
 @pytest.fixture
 def mock_anthropic():
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock()
+    import anthropic
+    client = AsyncMock(spec=anthropic.AsyncAnthropic)
     return client
