@@ -8,7 +8,9 @@ from typing import Optional
 @dataclass(frozen=True)
 class Config:
     bot_token: str
-    anthropic_api_key: str
+    llm_provider: str   # "groq" | "anthropic" | "ollama"
+    llm_api_key: str
+    llm_model: str      # empty string = use provider default
     database_path: Path
     gdrive_service_account_json: Path
     gdrive_backup_folder_id: Optional[str]
@@ -31,7 +33,9 @@ def load_config() -> Config:
     load_dotenv()
     return Config(
         bot_token=os.environ["BOT_TOKEN"],
-        anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
+        llm_provider=os.getenv("LLM_PROVIDER", "groq"),
+        llm_api_key=os.environ["LLM_API_KEY"],
+        llm_model=os.getenv("LLM_MODEL", ""),
         database_path=Path(os.getenv("DATABASE_PATH", "data/bot.db")),
         gdrive_service_account_json=Path(
             os.getenv("GDRIVE_SERVICE_ACCOUNT_JSON", "credentials/service_account.json")

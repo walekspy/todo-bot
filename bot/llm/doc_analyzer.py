@@ -2,8 +2,10 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import date
-from typing import Optional
-import anthropic
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from bot.llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -33,24 +35,18 @@ class DocEvent:
 
 
 async def analyze_doc(
-    client: anthropic.AsyncAnthropic,
+    client: "LLMClient",
     content: str,
     reminder_lead_days_hint: Optional[int],
 ) -> list[DocEvent]:
     try:
-        response = await client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=2048,
-            system=ANALYZE_DOC_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": content}],
-        )
-    except anthropic.APIError as e:
-        logger.error("analyze_doc: Claude API error: %s", e)
+        raw_json = await client.complete(ANALYZE_DOC_SYSTEM_PROMPT, content)
+    except Exception as e:
+        logger.error("analyze_doc: LLM error: %s", e)
         raise
 
     try:
-        raw_json = response.content[0].text.strip()
-        items = json.loads(raw_json)
+        items = json.loads(raw_json.strip())
     except (json.JSONDecodeError, IndexError) as e:
         logger.warning("analyze_doc: unparseable LLM response: %s", e)
         return []

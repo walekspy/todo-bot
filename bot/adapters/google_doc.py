@@ -1,10 +1,12 @@
 import re
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from urllib.parse import urlparse
-import anthropic
 import httpx
 from bot.adapters.base import RawTask, SourceAdapter
 from bot.llm.extractor import extract_tasks
+
+if TYPE_CHECKING:
+    from bot.llm.client import LLMClient
 
 
 def _doc_id_from_url(url: str) -> Optional[str]:
@@ -44,7 +46,7 @@ async def fetch_doc_content(url: str) -> str:
 
 
 class GoogleDocAdapter(SourceAdapter):
-    def __init__(self, client: anthropic.AsyncAnthropic):
+    def __init__(self, client: "LLMClient"):
         self.client = client
 
     async def extract(self, input_data: str) -> list[RawTask]:

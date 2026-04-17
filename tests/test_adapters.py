@@ -8,10 +8,8 @@ from bot.db.models import Priority
 
 
 def make_mock_client(json_str: str):
-    mock = MagicMock()
-    mock.messages.create = AsyncMock(return_value=MagicMock(
-        content=[MagicMock(text=json_str)]
-    ))
+    mock = AsyncMock()
+    mock.complete = AsyncMock(return_value=json_str)
     return mock
 
 

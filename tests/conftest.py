@@ -10,7 +10,9 @@ from pathlib import Path
 def config():
     return Config(
         bot_token="test_token",
-        anthropic_api_key="test_key",
+        llm_provider="groq",
+        llm_api_key="test_key",
+        llm_model="llama-3.3-70b-versatile",
         database_path=Path(":memory:"),
         gdrive_service_account_json=Path("credentials/service_account.json"),
         gdrive_backup_folder_id="test_folder",
@@ -39,7 +41,7 @@ def mock_bot():
 
 
 @pytest.fixture
-def mock_anthropic():
-    import anthropic
-    client = AsyncMock(spec=anthropic.AsyncAnthropic)
+def mock_llm_client():
+    from bot.llm.client import LLMClient
+    client = AsyncMock(spec=LLMClient)
     return client
