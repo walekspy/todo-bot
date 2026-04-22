@@ -3,13 +3,16 @@ import logging
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from aiogram import Bot, Dispatcher
+from aiogram.types import BotCommand
 from bot.config import load_config
 from bot.db.database import get_connection
 from bot.db.repository import TaskRepo, WatchedSourceRepo, UserRepo
 from bot.scheduler.setup import build_scheduler
+from aiogram.fsm.storage.memory import MemoryStorage
 from bot.handlers.commands import setup_commands_router
 from bot.handlers.messages import setup_messages_router
 from bot.handlers.callbacks import setup_callbacks_router
+from bot.handlers.snooze_fsm import setup_snooze_fsm_router
 from bot.llm.client import build_llm_client
 
 logging.basicConfig(
@@ -30,7 +33,7 @@ async def main() -> None:
         llm_client = build_llm_client(config.llm_provider, config.llm_api_key, config.llm_model)
 
         bot = Bot(token=config.bot_token)
-        dp = Dispatcher()
+        dp = Dispatcher(storage=MemoryStorage())
 
         # Scheduler — dedicated DB file to avoid APScheduler schema in app DB
         scheduler_db = config.database_path.parent / "scheduler.db"
@@ -42,14 +45,20 @@ async def main() -> None:
             task_repo, source_repo, user_repo, llm_client, config,
             scheduler=scheduler, bot=bot,
         )
-        messages_router, pending_tasks = setup_messages_router(llm_client, config)
+        messages_router, pending_tasks = setup_messages_router(llm_client, config, task_repo)
         callbacks_router = setup_callbacks_router(
             task_repo, config, pending_tasks, scheduler=scheduler, bot=bot,
+            source_repo=source_repo, llm_client=llm_client,
         )
 
-        # Order matters: callbacks and commands before catch-all text handler
+        snooze_fsm_router = setup_snooze_fsm_router(
+            task_repo, config, llm_client, scheduler, bot, source_repo=source_repo
+        )
+
+        # Order matters: FSM and callbacks before catch-all text handler
         dp.include_router(commands_router)
         dp.include_router(callbacks_router)
+        dp.include_router(snooze_fsm_router)
         dp.include_router(messages_router)
 
         # Startup reconciliation: reschedule reminders for all existing pending tasks
@@ -91,7 +100,7 @@ async def main() -> None:
                 },
             )
 
-        # Daily backup at 03:00 UTC
+        # Daily backup at 03:00 UTC (persistent jobstore — survives restarts)
         if config.gdrive_backup_folder_id:
             scheduler.add_job(
                 "bot.scheduler.jobs:backup_job",
@@ -99,6 +108,7 @@ async def main() -> None:
                 hour=3,
                 minute=0,
                 id="daily_backup",
+                jobstore="persistent",
                 replace_existing=True,
                 kwargs={
                     "db_path": str(config.database_path),
@@ -106,6 +116,17 @@ async def main() -> None:
                     "service_account_json": str(config.gdrive_service_account_json),
                 },
             )
+
+        await bot.set_my_commands([
+            BotCommand(command="add", description="Добавить задачу вручную"),
+            BotCommand(command="list", description="Список активных задач"),
+            BotCommand(command="today", description="Задачи на сегодня"),
+            BotCommand(command="done", description="Отметить задачу выполненной"),
+            BotCommand(command="sync", description="Синхронизировать с Google Tasks"),
+            BotCommand(command="watch", description="Следить за Google Doc"),
+            BotCommand(command="sources", description="Наблюдаемые документы"),
+            BotCommand(command="family", description="Задачи семейной группы"),
+        ])
 
         logger.info("Bot started. %d pending reminders scheduled.", len(pending_tasks_list))
 

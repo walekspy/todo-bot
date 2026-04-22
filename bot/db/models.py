@@ -37,6 +37,10 @@ class Task:
     assignee_id: Optional[int] = None
     is_family: bool = False
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    google_task_id: Optional[str] = None
+    google_tasklist_id: Optional[str] = None
+    google_updated_at: Optional[datetime] = None
 
 
 @dataclass
@@ -44,11 +48,20 @@ class WatchedSource:
     owner_id: int
     chat_id: int
     url: str
-    source_type: str  # "google_doc" | "md_file"
+    source_type: str  # "google_doc" | "google_sheet" | "md_file"
     reminder_lead_days: int = 3
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     last_checked: Optional[datetime] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+@dataclass
+class WatchedSheet:
+    source_id: str
+    sheet_name: str
+    reminder_lead_days: int = 3
+    enabled: bool = True
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
 @dataclass

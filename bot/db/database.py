@@ -39,6 +39,17 @@ CREATE TABLE IF NOT EXISTS watched_sources (
 )
 """
 
+CREATE_WATCHED_SHEETS_TABLE = """
+CREATE TABLE IF NOT EXISTS watched_sheets (
+    id TEXT PRIMARY KEY,
+    source_id TEXT NOT NULL,
+    sheet_name TEXT NOT NULL,
+    reminder_lead_days INTEGER NOT NULL DEFAULT 3,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    FOREIGN KEY (source_id) REFERENCES watched_sources(id) ON DELETE CASCADE
+)
+"""
+
 CREATE_USERS_TABLE = """
 CREATE TABLE IF NOT EXISTS users (
     telegram_id INTEGER PRIMARY KEY,
@@ -53,7 +64,19 @@ async def create_tables(conn: aiosqlite.Connection) -> None:
     await conn.execute("PRAGMA foreign_keys = ON")
     await conn.execute(CREATE_TASKS_TABLE)
     await conn.execute(CREATE_WATCHED_SOURCES_TABLE)
+    await conn.execute(CREATE_WATCHED_SHEETS_TABLE)
     await conn.execute(CREATE_USERS_TABLE)
+    # Migrations: add new columns if they don't exist yet
+    for col, definition in [
+        ("updated_at", "TEXT"),
+        ("google_task_id", "TEXT"),
+        ("google_tasklist_id", "TEXT"),
+        ("google_updated_at", "TEXT"),
+    ]:
+        try:
+            await conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} {definition}")
+        except Exception:
+            pass  # Column already exists
     await conn.commit()
 
 

@@ -59,11 +59,11 @@ async def analyze_doc(
             events.append(
                 DocEvent(
                     title=item["title"],
-                    date=date.fromisoformat(item["date"]),
+                    date=date.fromisoformat(str(item["date"])),
                     reminder_lead_days=lead,
                     notes=item.get("notes"),
                 )
             )
-        except (KeyError, ValueError) as e:
+        except (KeyError, ValueError, TypeError) as e:
             logger.warning("Skipping malformed doc event: %s — %s", item, e)
     return events

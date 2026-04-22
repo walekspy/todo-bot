@@ -16,9 +16,12 @@ def config():
         database_path=Path(":memory:"),
         gdrive_service_account_json=Path("credentials/service_account.json"),
         gdrive_backup_folder_id="test_folder",
-        snooze_evening_hour=19,
         snooze_morning_hour=9,
+        night_start_hour=23,
+        night_end_hour=7,
         escalation_snooze_count=3,
+        timezone="UTC",
+        google_tasks_token_path=None,
     )
 
 

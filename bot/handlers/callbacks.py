@@ -1,17 +1,25 @@
 from datetime import datetime, timezone, timedelta
-from aiogram import Router, F
+from zoneinfo import ZoneInfo
+from aiogram import Router, F, Bot
+from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from bot.config import Config
 from bot.db.models import Task, TaskStatus, Priority
 from bot.db.repository import TaskRepo
 from bot.keyboards.snooze import snooze_keyboard
 from bot.keyboards.reminder import reminder_keyboard
+from bot.handlers.snooze_fsm import CustomSnoozeStates, WatchStates
 
 
 def setup_callbacks_router(
     task_repo: TaskRepo,
     config: Config,
     pending_tasks: dict,
+    scheduler: AsyncIOScheduler,
+    bot: Bot,
+    source_repo=None,
+    llm_client=None,
 ) -> Router:
     router = Router()
 
@@ -48,6 +56,20 @@ def setup_callbacks_router(
             chat_id=callback.message.chat.id,
         )
         await task_repo.save(task)
+        from bot.scheduler.jobs import task_reminder_job
+        scheduler.add_job(
+            task_reminder_job,
+            trigger="date",
+            run_date=task.remind_at,
+            id=f"reminder_{task.id}",
+            replace_existing=True,
+            kwargs={
+                "task_id": task.id,
+                "bot": bot,
+                "task_repo": task_repo,
+                "config": config,
+            },
+        )
         await callback.message.edit_text(
             f"✅ Задача сохранена: <b>{task.title}</b>", parse_mode="HTML"
         )
@@ -89,6 +111,20 @@ def setup_callbacks_router(
         if not await _check_assignee(callback, task):
             return
         await task_repo.update_status(task_id, TaskStatus.ACTIVE)
+        from bot.scheduler.jobs import checkin_job
+        scheduler.add_job(
+            checkin_job,
+            trigger="date",
+            run_date=datetime.now(timezone.utc) + timedelta(minutes=30),
+            id=f"checkin_{task_id}",
+            replace_existing=True,
+            kwargs={
+                "task_id": task_id,
+                "bot": bot,
+                "task_repo": task_repo,
+                "config": config,
+            },
+        )
         await callback.message.edit_text(
             f"▶️ Взято в работу: <b>{task.title}</b>\nПроверю через 30 минут.",
             parse_mode="HTML",
@@ -111,32 +147,68 @@ def setup_callbacks_router(
 
     # ── Snooze time selection ───────────────────────────────────────────
 
+    def _is_night(dt: datetime) -> bool:
+        """Return True if dt falls within the configured night window."""
+        h = dt.hour
+        if config.night_start_hour > config.night_end_hour:
+            # window wraps midnight: e.g. 23–7
+            return h >= config.night_start_hour or h < config.night_end_hour
+        return config.night_start_hour <= h < config.night_end_hour
+
+    def _skip_night(dt: datetime) -> tuple:
+        """If dt is in night window return (adjusted_dt, True), else (dt, False)."""
+        if not _is_night(dt):
+            return dt, False
+        # advance to night_end_hour on the same or next day
+        candidate = dt.replace(hour=config.night_end_hour, minute=0, second=0, microsecond=0)
+        if candidate <= dt:
+            candidate += timedelta(days=1)
+        return candidate, True
+
     @router.callback_query(F.data.startswith("snooze:"))
-    async def on_snooze_choice(callback: CallbackQuery) -> None:
+    async def on_snooze_choice(callback: CallbackQuery, state: FSMContext) -> None:
         parts = callback.data.split(":", 2)
         option = parts[1]
         task_id = parts[2]
 
-        now = datetime.now(timezone.utc)
+        tz = ZoneInfo(config.timezone)
+        now_local = datetime.now(tz)
+        warning = ""
 
-        if option == "1h":
-            until = now + timedelta(hours=1)
-        elif option == "3h":
-            until = now + timedelta(hours=3)
-        elif option == "evening":
-            until = now.replace(
-                hour=config.snooze_evening_hour, minute=0, second=0, microsecond=0
-            )
-            if until <= now:
-                until += timedelta(days=1)
-        elif option == "morning":
-            until = (now + timedelta(days=1)).replace(
-                hour=config.snooze_morning_hour, minute=0, second=0, microsecond=0
-            )
+        if option == "15m":
+            until = now_local + timedelta(minutes=15)
+        elif option == "30m":
+            until = now_local + timedelta(minutes=30)
+        elif option == "1h":
+            until = now_local + timedelta(hours=1)
+        elif option == "later":
+            task = await task_repo.get(task_id)
+            if task is None:
+                await callback.answer("Задача не найдена.")
+                return
+            priority = task.priority.value if task else "medium"
+            if priority == "high":
+                until = now_local + timedelta(hours=3)
+                until, shifted = _skip_night(until)
+                if shifted:
+                    local_str = f"{until.strftime('%d.%m')} в {until.strftime('%H:%M')}"
+                    warning = f"⚠️ Задача с высоким приоритетом переносится на ночное время! Напомню в {local_str}"
+            elif priority == "low":
+                until = now_local + timedelta(hours=24)
+                until, _ = _skip_night(until)
+            else:  # medium
+                until = (now_local + timedelta(days=1)).replace(
+                    hour=config.snooze_morning_hour, minute=0, second=0, microsecond=0
+                )
         elif option == "custom":
+            await state.set_state(CustomSnoozeStates.waiting_for_time)
+            await state.update_data(task_id=task_id)
             await callback.message.reply(
-                "Напиши время для напоминания в формате:\n"
-                "<code>ДД.ММ.ГГГГ ЧЧ:ММ</code> или просто <code>ЧЧ:ММ</code> (сегодня)",
+                "Введи время напоминания:\n"
+                "<code>15:30</code> — сегодня в 15:30\n"
+                "<code>завтра в 10</code>\n"
+                "<code>через 2 часа</code>\n"
+                "<code>05.05 10:00</code>",
                 parse_mode="HTML",
             )
             await callback.answer()
@@ -146,11 +218,25 @@ def setup_callbacks_router(
             return
 
         await task_repo.snooze(task_id, until)
-        task = await task_repo.get(task_id)
-        await callback.message.edit_text(
-            f"⏱ <b>{task.title}</b>\nОтложено до {until.strftime('%d.%m %H:%M')} UTC",
-            parse_mode="HTML",
+        from bot.scheduler.jobs import task_reminder_job
+        scheduler.add_job(
+            task_reminder_job,
+            trigger="date",
+            run_date=until,
+            id=f"reminder_{task_id}",
+            replace_existing=True,
+            kwargs={
+                "task_id": task_id,
+                "bot": bot,
+                "task_repo": task_repo,
+                "config": config,
+            },
         )
+        task = await task_repo.get(task_id)
+        local_dt = until.astimezone(tz)
+        local_str = f"{local_dt.strftime('%d.%m')} в {local_dt.strftime('%H:%M')}"
+        text = warning if warning else f"⏱ <b>{task.title}</b>\nНапомню {local_str}"
+        await callback.message.edit_text(text, parse_mode="HTML")
         await callback.answer()
 
     # ── Escalation callbacks ────────────────────────────────────────────
@@ -186,6 +272,37 @@ def setup_callbacks_router(
         )
         await callback.answer()
 
+    # ── List snooze (from /list "Перенести" button) ────────────────────────
+
+    @router.callback_query(F.data.startswith("list_snooze:"))
+    async def on_list_snooze(callback: CallbackQuery) -> None:
+        task_id = callback.data.split(":", 1)[1]
+        task = await task_repo.get(task_id)
+        if task is None:
+            await callback.answer("Задача не найдена.")
+            return
+        await callback.message.edit_reply_markup(
+            reply_markup=snooze_keyboard(task_id, config)
+        )
+        await callback.answer()
+
+    # ── Done list callbacks (from /done command and completion detection) ──
+
+    @router.callback_query(F.data.startswith("done_list:"))
+    async def on_done_list(callback: CallbackQuery) -> None:
+        task_id = callback.data.split(":", 1)[1]
+        task = await task_repo.get(task_id)
+        if task is None:
+            await callback.answer("Задача не найдена.")
+            return
+        await task_repo.update_status(task_id, TaskStatus.DONE)
+        name = callback.from_user.username or callback.from_user.first_name
+        text = f"✅ Выполнено: <b>{task.title}</b>"
+        if callback.message.chat.type != "private":
+            text += f" — @{name}"
+        await callback.message.edit_text(text, parse_mode="HTML")
+        await callback.answer("Отмечено как выполненное!")
+
     # ── Event alert callbacks ───────────────────────────────────────────
 
     @router.callback_query(F.data.startswith("event:create:"))
@@ -215,6 +332,97 @@ def setup_callbacks_router(
     @router.callback_query(F.data == "event:skip")
     async def on_event_skip(callback: CallbackQuery) -> None:
         await callback.message.edit_text("❌ Событие пропущено.")
+        await callback.answer()
+
+    # ── Doc check / delete (from /sources) ────────────────────────────
+
+    @router.callback_query(F.data.startswith("doccheck:"))
+    async def on_doc_check(callback: CallbackQuery) -> None:
+        source_id = callback.data.split(":", 1)[1]
+        if source_repo is None or llm_client is None:
+            await callback.answer("Не настроено.")
+            return
+        await callback.message.edit_text("🔍 Проверяю документ…")
+        await callback.answer()
+        try:
+            from bot.scheduler.jobs import doc_check_job
+            await doc_check_job(
+                source_id=source_id,
+                bot=bot,
+                source_repo=source_repo,
+                llm_client=llm_client,
+                config=config,
+                report_chat_id=callback.message.chat.id,
+            )
+            await callback.message.edit_text("✅ Проверка завершена.")
+        except Exception as e:
+            await callback.message.edit_text(f"❌ Ошибка: {e}")
+
+    # ── Sheet settings (from /watch google_sheet) ───────────────────────
+
+    @router.callback_query(F.data.startswith("sheetedit:"))
+    async def on_sheet_edit(callback: CallbackQuery, state: FSMContext) -> None:
+        sheet_id = callback.data.split(":", 1)[1]
+        from bot.db.repository import WatchedSheetRepo
+        sheet_repo = WatchedSheetRepo(task_repo.conn)
+        sheet = await sheet_repo.get(sheet_id)
+        if sheet is None:
+            await callback.answer("Лист не найден.")
+            return
+        await state.set_state(WatchStates.editing_sheet_days)
+        await state.update_data(sheet_id=sheet_id)
+        await callback.message.reply(
+            f"Лист <b>{sheet.sheet_name}</b>\n"
+            f"Сейчас: за {sheet.reminder_lead_days} дн.\n\n"
+            "Введи новое количество дней:",
+            parse_mode="HTML",
+        )
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("sheetdone:"))
+    async def on_sheet_done(callback: CallbackQuery) -> None:
+        await callback.message.edit_text("✅ Настройка листов завершена.")
+        await callback.answer()
+
+    # ── Source settings (from /sources) ───────────────────────────────
+
+    @router.callback_query(F.data.startswith("sheetsettings:"))
+    async def on_sheet_settings(callback: CallbackQuery) -> None:
+        source_id = callback.data.split(":", 1)[1]
+        from bot.db.repository import WatchedSheetRepo
+        from aiogram.utils.keyboard import InlineKeyboardBuilder
+        from aiogram.types import InlineKeyboardButton
+        sheet_repo = WatchedSheetRepo(task_repo.conn)
+        sheets = await sheet_repo.list_for_source(source_id)
+        if not sheets:
+            await callback.answer("Нет листов.")
+            return
+        builder = InlineKeyboardBuilder()
+        for s in sheets:
+            status = "✅" if s.enabled else "❌"
+            builder.row(InlineKeyboardButton(
+                text=f"✏️ {s.sheet_name} ({s.reminder_lead_days} дн.) {status}",
+                callback_data=f"sheetedit:{s.id}",
+            ))
+        await callback.message.edit_text(
+            "⚙️ <b>Настройки листов:</b>",
+            parse_mode="HTML",
+            reply_markup=builder.as_markup(),
+        )
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("docdel:"))
+    async def on_doc_delete(callback: CallbackQuery) -> None:
+        source_id = callback.data.split(":", 1)[1]
+        if source_repo is None:
+            await callback.answer("Не настроено.")
+            return
+        await source_repo.delete(source_id)
+        try:
+            scheduler.remove_job(f"doccheck_{source_id}")
+        except Exception:
+            pass
+        await callback.message.edit_text("🗑 Документ удалён из наблюдения.")
         await callback.answer()
 
     return router

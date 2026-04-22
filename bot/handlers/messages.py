@@ -1,19 +1,50 @@
 import uuid
+from typing import Optional
+from zoneinfo import ZoneInfo
 from aiogram import Router, F
 from aiogram.types import Message, Document
 from bot.adapters.manual import ManualAdapter
 from bot.adapters.md_file import MdFileAdapter
 from bot.keyboards.confirmation import confirm_keyboard
+from bot.keyboards.task_list import done_list_keyboard
+from bot.db.repository import TaskRepo
 from bot.config import Config
-import anthropic
 
 # Pending RawTask objects awaiting user confirmation: {tmp_id: RawTask}
 _pending: dict = {}
 
+# Cached bot username for group mention check
+_bot_username: Optional[str] = None
+
+# Keywords that signal "I completed something" intent
+_COMPLETION_WORDS = {
+    "выполнил", "выполнила", "выполнено",
+    "сделал", "сделала", "сделано",
+    "готово", "готов", "готова",
+    "завершил", "завершила", "завершено",
+    "закончил", "закончила", "закончено",
+    "done", "completed",
+}
+
+
+def _completion_query(text: str) -> Optional[str]:
+    """If text looks like a completion message, return search query (title hint).
+    Returns empty string if keyword found but no extra words.
+    Returns None if not a completion message.
+    """
+    words = text.lower().split()
+    for i, word in enumerate(words):
+        clean = word.strip(".,!?")
+        if clean in _COMPLETION_WORDS:
+            remaining = " ".join(words[:i] + words[i + 1:]).strip()
+            return remaining
+    return None
+
 
 def setup_messages_router(
-    llm_client: anthropic.AsyncAnthropic,
+    llm_client,
     config: Config,
+    task_repo: TaskRepo = None,
 ) -> tuple[Router, dict]:
     router = Router()
 
@@ -29,7 +60,7 @@ def setup_messages_router(
         content_bytes = await message.bot.download_file(file.file_path)
         content = content_bytes.read().decode("utf-8")
 
-        adapter = MdFileAdapter(llm_client)
+        adapter = MdFileAdapter(llm_client, tz_name=config.timezone)
         tasks = await adapter.extract(content, filename=doc.file_name)
 
         if not tasks:
@@ -43,7 +74,8 @@ def setup_messages_router(
             if raw.notes:
                 preview += f"\n<i>{raw.notes}</i>"
             if raw.remind_at:
-                preview += f"\n📅 {raw.remind_at.strftime('%d.%m.%Y %H:%M')}"
+                local_dt = raw.remind_at.astimezone(ZoneInfo(config.timezone))
+                preview += f"\n📅 {local_dt.strftime('%d.%m.%Y %H:%M')}"
             if raw.recurrence:
                 preview += "\n🔄 Повторяется"
             await message.answer(
@@ -57,9 +89,42 @@ def setup_messages_router(
         if message.text and message.text.startswith("/"):
             return  # ignore commands — handled by commands router
 
+        # In group chats only respond when bot is @mentioned
+        is_group = message.chat.type in ("group", "supergroup")
+        if is_group:
+            global _bot_username
+            if _bot_username is None:
+                _bot_username = (await message.bot.get_me()).username
+            if not message.text or f"@{_bot_username}" not in message.text:
+                return
+            # Strip the @mention before processing
+            text = message.text.replace(f"@{_bot_username}", "").strip()
+        else:
+            text = message.text or ""
+
+        # Check if user is reporting a completed task (variant В)
+        query = _completion_query(text)
+        if query is not None and task_repo is not None:
+            active_tasks = await task_repo.list_active(chat_id=message.chat.id)
+            if not active_tasks:
+                await message.answer("Нет активных задач.")
+                return
+            # Filter by query if there's a hint, otherwise show all
+            if query:
+                matched = [t for t in active_tasks if query in t.title.lower()]
+            else:
+                matched = active_tasks
+            tasks_to_show = matched if matched else active_tasks
+            await message.answer(
+                "Какую задачу отметить выполненной?",
+                reply_markup=done_list_keyboard(tasks_to_show),
+            )
+            return
+
+        # Otherwise treat as new task
         await message.answer("🔍 Понял, обрабатываю…")
-        adapter = ManualAdapter(llm_client)
-        tasks = await adapter.extract(message.text or "")
+        adapter = ManualAdapter(llm_client, tz_name=config.timezone)
+        tasks = await adapter.extract(text)
 
         if not tasks:
             await message.answer(
@@ -73,7 +138,8 @@ def setup_messages_router(
             _pending[tmp_id] = raw
             preview = f"📋 <b>Создать задачу?</b>\n\n{raw.title}"
             if raw.remind_at:
-                preview += f"\n📅 {raw.remind_at.strftime('%d.%m.%Y %H:%M')}"
+                local_dt = raw.remind_at.astimezone(ZoneInfo(config.timezone))
+                preview += f"\n📅 {local_dt.strftime('%d.%m.%Y %H:%M')}"
             await message.answer(
                 preview,
                 parse_mode="HTML",

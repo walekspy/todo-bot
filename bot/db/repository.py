@@ -1,7 +1,7 @@
 import aiosqlite
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
-from bot.db.models import Task, TaskStatus, Priority, WatchedSource, User
+from bot.db.models import Task, TaskStatus, Priority, WatchedSource, WatchedSheet, User
 
 
 def _parse_dt(s: Optional[str]) -> Optional[datetime]:
@@ -17,6 +17,7 @@ def _fmt_dt(dt: Optional[datetime]) -> Optional[str]:
 
 
 def _row_to_task(row: aiosqlite.Row) -> Task:
+    keys = row.keys()
     return Task(
         id=row["id"],
         title=row["title"],
@@ -35,6 +36,10 @@ def _row_to_task(row: aiosqlite.Row) -> Task:
         chat_id=row["chat_id"],
         is_family=bool(row["is_family"]),
         created_at=_parse_dt(row["created_at"]),
+        updated_at=_parse_dt(row["updated_at"]) if "updated_at" in keys else _parse_dt(row["created_at"]),
+        google_task_id=row["google_task_id"] if "google_task_id" in keys else None,
+        google_tasklist_id=row["google_tasklist_id"] if "google_tasklist_id" in keys else None,
+        google_updated_at=_parse_dt(row["google_updated_at"]) if "google_updated_at" in keys else None,
     )
 
 
@@ -47,8 +52,9 @@ class TaskRepo:
             """INSERT INTO tasks
                (id, title, notes, status, priority, source, source_ref,
                 due_at, remind_at, recurrence, snoozed_until, snooze_count,
-                owner_id, assignee_id, chat_id, is_family, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                owner_id, assignee_id, chat_id, is_family, created_at,
+                updated_at, google_task_id, google_tasklist_id, google_updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 task.id, task.title, task.notes, task.status.value,
                 task.priority.value, task.source, task.source_ref,
@@ -56,6 +62,8 @@ class TaskRepo:
                 task.recurrence, _fmt_dt(task.snoozed_until),
                 task.snooze_count, task.owner_id, task.assignee_id,
                 task.chat_id, int(task.is_family), _fmt_dt(task.created_at),
+                _fmt_dt(task.updated_at), task.google_task_id,
+                task.google_tasklist_id, _fmt_dt(task.google_updated_at),
             ),
         )
         await self.conn.commit()
@@ -97,26 +105,67 @@ class TaskRepo:
 
     async def update_status(self, task_id: str, status: TaskStatus) -> None:
         await self.conn.execute(
-            "UPDATE tasks SET status = ? WHERE id = ?",
-            (status.value, task_id),
+            "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+            (status.value, _fmt_dt(datetime.now(timezone.utc)), task_id),
         )
         await self.conn.commit()
 
     async def snooze(self, task_id: str, until: datetime) -> None:
         await self.conn.execute(
             """UPDATE tasks
-               SET snoozed_until = ?, snooze_count = snooze_count + 1, status = 'pending', remind_at = ?
+               SET snoozed_until = ?, snooze_count = snooze_count + 1,
+                   status = 'pending', remind_at = ?, updated_at = ?
                WHERE id = ?""",
-            (_fmt_dt(until), _fmt_dt(until), task_id),
+            (_fmt_dt(until), _fmt_dt(until), _fmt_dt(datetime.now(timezone.utc)), task_id),
         )
         await self.conn.commit()
 
     async def update_priority(self, task_id: str, priority: Priority) -> None:
         await self.conn.execute(
-            "UPDATE tasks SET priority = ? WHERE id = ?",
-            (priority.value, task_id),
+            "UPDATE tasks SET priority = ?, updated_at = ? WHERE id = ?",
+            (priority.value, _fmt_dt(datetime.now(timezone.utc)), task_id),
         )
         await self.conn.commit()
+
+    async def get_by_google_id(self, google_task_id: str) -> Optional[Task]:
+        async with self.conn.execute(
+            "SELECT * FROM tasks WHERE google_task_id = ?", (google_task_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return _row_to_task(row) if row else None
+
+    async def set_google_task_id(
+        self, task_id: str, google_task_id: str,
+        google_tasklist_id: str, google_updated_at: Optional[datetime]
+    ) -> None:
+        await self.conn.execute(
+            """UPDATE tasks SET google_task_id = ?, google_tasklist_id = ?,
+               google_updated_at = ? WHERE id = ?""",
+            (google_task_id, google_tasklist_id,
+             _fmt_dt(google_updated_at), task_id),
+        )
+        await self.conn.commit()
+
+    async def update_from_google(
+        self, task_id: str, title: str, notes: Optional[str],
+        status: TaskStatus, due_at: Optional[datetime],
+        remind_at: Optional[datetime],
+        google_updated_at: Optional[datetime],
+    ) -> None:
+        await self.conn.execute(
+            """UPDATE tasks SET title = ?, notes = ?, status = ?,
+               due_at = ?, remind_at = ?, google_updated_at = ? WHERE id = ?""",
+            (title, notes, status.value, _fmt_dt(due_at),
+             _fmt_dt(remind_at), _fmt_dt(google_updated_at), task_id),
+        )
+        await self.conn.commit()
+
+    async def list_all_active(self) -> list[Task]:
+        """All non-cancelled tasks across all chats (for Google sync)."""
+        async with self.conn.execute(
+            "SELECT * FROM tasks WHERE status != 'cancelled' ORDER BY created_at"
+        ) as cursor:
+            return [_row_to_task(r) for r in await cursor.fetchall()]
 
     async def update_assignee(self, task_id: str, assignee_id: int) -> None:
         await self.conn.execute(
@@ -124,6 +173,13 @@ class TaskRepo:
             (assignee_id, task_id),
         )
         await self.conn.commit()
+
+    async def list_all_pending(self) -> list[Task]:
+        """Return all non-terminal tasks with a future or past remind_at. Used on startup to reschedule."""
+        async with self.conn.execute(
+            "SELECT * FROM tasks WHERE status NOT IN ('done','cancelled') ORDER BY remind_at"
+        ) as cursor:
+            return [_row_to_task(r) for r in await cursor.fetchall()]
 
 
 class WatchedSourceRepo:
@@ -164,6 +220,12 @@ class WatchedSourceRepo:
         await self.conn.execute(
             "UPDATE watched_sources SET last_checked = ? WHERE id = ?",
             (_fmt_dt(checked_at), source_id),
+        )
+        await self.conn.commit()
+
+    async def delete(self, source_id: str) -> None:
+        await self.conn.execute(
+            "DELETE FROM watched_sources WHERE id = ?", (source_id,)
         )
         await self.conn.commit()
 
@@ -213,6 +275,76 @@ class UserRepo:
                 family_chat_id=row["family_chat_id"],
                 created_at=_parse_dt(row["created_at"]),
             )
+
+
+class WatchedSheetRepo:
+    def __init__(self, conn: aiosqlite.Connection):
+        self.conn = conn
+
+    async def save(self, sheet: WatchedSheet) -> None:
+        await self.conn.execute(
+            """INSERT OR REPLACE INTO watched_sheets
+               (id, source_id, sheet_name, reminder_lead_days, enabled)
+               VALUES (?,?,?,?,?)""",
+            (sheet.id, sheet.source_id, sheet.sheet_name,
+             sheet.reminder_lead_days, int(sheet.enabled)),
+        )
+        await self.conn.commit()
+
+    async def save_many(self, sheets: list) -> None:
+        for sheet in sheets:
+            await self.conn.execute(
+                """INSERT OR REPLACE INTO watched_sheets
+                   (id, source_id, sheet_name, reminder_lead_days, enabled)
+                   VALUES (?,?,?,?,?)""",
+                (sheet.id, sheet.source_id, sheet.sheet_name,
+                 sheet.reminder_lead_days, int(sheet.enabled)),
+            )
+        await self.conn.commit()
+
+    async def list_for_source(self, source_id: str) -> list:
+        async with self.conn.execute(
+            "SELECT * FROM watched_sheets WHERE source_id = ? ORDER BY sheet_name",
+            (source_id,)
+        ) as cursor:
+            return [
+                WatchedSheet(
+                    id=r["id"],
+                    source_id=r["source_id"],
+                    sheet_name=r["sheet_name"],
+                    reminder_lead_days=r["reminder_lead_days"],
+                    enabled=bool(r["enabled"]),
+                )
+                for r in await cursor.fetchall()
+            ]
+
+    async def get(self, sheet_id: str) -> Optional[WatchedSheet]:
+        async with self.conn.execute(
+            "SELECT * FROM watched_sheets WHERE id = ?", (sheet_id,)
+        ) as cursor:
+            r = await cursor.fetchone()
+            if not r:
+                return None
+            return WatchedSheet(
+                id=r["id"],
+                source_id=r["source_id"],
+                sheet_name=r["sheet_name"],
+                reminder_lead_days=r["reminder_lead_days"],
+                enabled=bool(r["enabled"]),
+            )
+
+    async def update_lead_days(self, sheet_id: str, days: int) -> None:
+        await self.conn.execute(
+            "UPDATE watched_sheets SET reminder_lead_days = ? WHERE id = ?",
+            (days, sheet_id),
+        )
+        await self.conn.commit()
+
+    async def delete_for_source(self, source_id: str) -> None:
+        await self.conn.execute(
+            "DELETE FROM watched_sheets WHERE source_id = ?", (source_id,)
+        )
+        await self.conn.commit()
 
     async def set_family_chat(self, telegram_id: int, chat_id: int) -> None:
         await self.conn.execute(
