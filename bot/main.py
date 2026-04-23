@@ -57,7 +57,8 @@ async def main() -> None:
         )
 
         snooze_fsm_router = setup_snooze_fsm_router(
-            task_repo, config, llm_client, scheduler, bot, source_repo=source_repo
+            task_repo, config, llm_client, scheduler, bot,
+            source_repo=source_repo, settings_repo=settings_repo,
         )
 
         # Order matters: FSM and callbacks before catch-all text handler
@@ -102,6 +103,7 @@ async def main() -> None:
                     "source_repo": source_repo,
                     "llm_client": llm_client,
                     "config": config,
+                    "settings_repo": settings_repo,
                 },
             )
 
@@ -133,7 +135,9 @@ async def main() -> None:
             BotCommand(command="family", description="Задачи семейной группы"),
             BotCommand(command="backup", description="Бэкап БД в Telegram прямо сейчас"),
             BotCommand(command="chatid", description="Показать ID этого чата"),
-            BotCommand(command="set_notify", description="Установить группу уведомлений"),
+            BotCommand(command="set_notify", description="Направить напоминания в другой чат"),
+            BotCommand(command="unset_notify", description="Отменить маршрутизацию напоминаний"),
+            BotCommand(command="notify_status", description="Куда уходят напоминания"),
         ])
 
         logger.info("Bot started. %d pending reminders scheduled.", len(pending_tasks_list))

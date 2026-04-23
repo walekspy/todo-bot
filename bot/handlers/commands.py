@@ -199,7 +199,12 @@ def setup_commands_router(
 
     @router.message(Command("chatid"))
     async def cmd_chatid(message: Message) -> None:
-        await message.answer(f"ID этого чата: <code>{message.chat.id}</code>", parse_mode="HTML")
+        await message.answer(
+            f"ID этого чата: <code>{message.chat.id}</code>\n\n"
+            f"Чтобы напоминания из другого чата приходили сюда, скопируй этот ID "
+            f"и выполни в чате задач: <code>/set_notify {message.chat.id}</code>",
+            parse_mode="HTML",
+        )
 
     @router.message(Command("set_notify"))
     async def cmd_set_notify(message: Message) -> None:
@@ -220,9 +225,79 @@ def setup_commands_router(
         except ValueError:
             await message.answer("Неверный формат. ID должен быть числом, например: -1001234567890")
             return
+        if notify_id == message.chat.id:
+            await message.answer(
+                "⚠️ Это ID текущего чата — напоминания и так приходят сюда. "
+                "Укажи ID другого чата, куда хочешь перенаправлять уведомления."
+            )
+            return
+        # Validate bot is a member of target chat
+        if bot is not None:
+            try:
+                target_chat = await bot.get_chat(notify_id)
+            except Exception as e:
+                await message.answer(
+                    f"❌ Не могу достучаться до чата <code>{notify_id}</code>.\n"
+                    f"Убедись что:\n"
+                    f"• ID указан верно (включая знак минус для групп)\n"
+                    f"• Бот добавлен в тот чат\n\n"
+                    f"<i>Ошибка: {str(e)[:200]}</i>",
+                    parse_mode="HTML",
+                )
+                return
+            target_title = getattr(target_chat, "title", None) or getattr(target_chat, "full_name", None) or str(notify_id)
+        else:
+            target_title = str(notify_id)
         await settings_repo.set_notify_chat(message.chat.id, notify_id)
         await message.answer(
-            f"✅ Напоминания для этой группы будут отправляться в чат <code>{notify_id}</code>",
+            f"✅ Напоминания для этого чата будут отправляться в «{target_title}» "
+            f"(<code>{notify_id}</code>).\n\n"
+            f"Проверить: /notify_status\n"
+            f"Отменить: /unset_notify",
+            parse_mode="HTML",
+        )
+
+    @router.message(Command("unset_notify"))
+    async def cmd_unset_notify(message: Message) -> None:
+        if not settings_repo:
+            await message.answer("Настройки недоступны.")
+            return
+        existing = await settings_repo.get(message.chat.id)
+        if existing is None or existing.notify_chat_id is None:
+            await message.answer("ℹ️ Маршрутизация напоминаний не настроена. Нечего отключать.")
+            return
+        await settings_repo.clear_notify_chat(message.chat.id)
+        await message.answer(
+            "✅ Маршрутизация отключена. Напоминания снова будут приходить сюда."
+        )
+
+    @router.message(Command("notify_status"))
+    async def cmd_notify_status(message: Message) -> None:
+        if not settings_repo:
+            await message.answer("Настройки недоступны.")
+            return
+        settings = await settings_repo.get(message.chat.id)
+        if settings is None or settings.notify_chat_id is None:
+            await message.answer(
+                "📍 Напоминания приходят в этот же чат.\n\n"
+                "Чтобы направить их в отдельный чат, используй /set_notify."
+            )
+            return
+        target_title = str(settings.notify_chat_id)
+        if bot is not None:
+            try:
+                target_chat = await bot.get_chat(settings.notify_chat_id)
+                target_title = (
+                    getattr(target_chat, "title", None)
+                    or getattr(target_chat, "full_name", None)
+                    or str(settings.notify_chat_id)
+                )
+            except Exception:
+                target_title = f"{settings.notify_chat_id} (не удалось получить название)"
+        await message.answer(
+            f"📍 Напоминания из этого чата идут в «{target_title}» "
+            f"(<code>{settings.notify_chat_id}</code>).\n\n"
+            f"Отменить маршрутизацию: /unset_notify",
             parse_mode="HTML",
         )
 

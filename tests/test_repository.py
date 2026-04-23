@@ -2,7 +2,7 @@ import pytest
 import pytest_asyncio
 from datetime import datetime, timezone, timedelta
 from bot.db.models import Task, TaskStatus, Priority, WatchedSource, User
-from bot.db.repository import TaskRepo, WatchedSourceRepo, UserRepo
+from bot.db.repository import TaskRepo, WatchedSourceRepo, UserRepo, ChatSettingsRepo
 import uuid
 
 
@@ -80,3 +80,59 @@ async def test_list_due_for_reminder(db):
     tasks = await repo.list_due(as_of=now)
     assert len(tasks) == 1
     assert tasks[0].title == "Due now"
+
+
+# ---- ChatSettingsRepo ----
+
+
+@pytest.mark.asyncio
+async def test_chat_settings_set_and_get(db):
+    repo = ChatSettingsRepo(db)
+    await repo.set_notify_chat(chat_id=100, notify_chat_id=500)
+    settings = await repo.get(100)
+    assert settings is not None
+    assert settings.chat_id == 100
+    assert settings.notify_chat_id == 500
+
+
+@pytest.mark.asyncio
+async def test_chat_settings_get_missing_returns_none(db):
+    repo = ChatSettingsRepo(db)
+    settings = await repo.get(999)
+    assert settings is None
+
+
+@pytest.mark.asyncio
+async def test_chat_settings_set_overwrites(db):
+    repo = ChatSettingsRepo(db)
+    await repo.set_notify_chat(100, 500)
+    await repo.set_notify_chat(100, 600)
+    settings = await repo.get(100)
+    assert settings.notify_chat_id == 600
+
+
+@pytest.mark.asyncio
+async def test_chat_settings_clear_removes_routing(db):
+    repo = ChatSettingsRepo(db)
+    await repo.set_notify_chat(100, 500)
+    await repo.clear_notify_chat(100)
+    settings = await repo.get(100)
+    assert settings is None
+
+
+@pytest.mark.asyncio
+async def test_chat_settings_clear_missing_is_noop(db):
+    repo = ChatSettingsRepo(db)
+    # Should not raise when clearing a chat that has no settings
+    await repo.clear_notify_chat(999)
+    assert await repo.get(999) is None
+
+
+@pytest.mark.asyncio
+async def test_task_notify_chat_id_roundtrip(db):
+    """Task with notify_chat_id should persist and load correctly."""
+    repo = TaskRepo(db)
+    task = make_task(title="Routed task", notify_chat_id=777)
+    await repo.save(task)
+    fetched = await repo.get(task.id)
+    assert fetched.notify_chat_id == 777
