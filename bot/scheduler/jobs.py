@@ -168,7 +168,7 @@ async def checkin_job(
     await send_task_reminder(bot, task, config)
 
 
-async def backup_job(db_path: str, gdrive_folder_id: str, service_account_json: str) -> None:
-    from bot.backup.gdrive import upload_backup
+async def backup_job(db_path: str, backup_chat_id: int, bot: Bot) -> None:
+    from bot.backup.telegram_backup import send_backup
     from pathlib import Path
-    await upload_backup(Path(db_path), gdrive_folder_id, Path(service_account_json))
+    await send_backup(Path(db_path), backup_chat_id, bot)

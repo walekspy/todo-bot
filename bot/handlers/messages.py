@@ -7,7 +7,8 @@ from bot.adapters.manual import ManualAdapter
 from bot.adapters.md_file import MdFileAdapter
 from bot.keyboards.confirmation import confirm_keyboard
 from bot.keyboards.task_list import done_list_keyboard
-from bot.db.repository import TaskRepo
+from bot.db.repository import TaskRepo, ChatMemberRepo
+from bot.db.models import ChatMember
 from bot.config import Config
 
 # Pending RawTask objects awaiting user confirmation: {tmp_id: RawTask}
@@ -45,6 +46,7 @@ def setup_messages_router(
     llm_client,
     config: Config,
     task_repo: TaskRepo = None,
+    member_repo: ChatMemberRepo = None,
 ) -> tuple[Router, dict]:
     router = Router()
 
@@ -91,14 +93,29 @@ def setup_messages_router(
 
         # In group chats only respond when bot is @mentioned
         is_group = message.chat.type in ("group", "supergroup")
+
+        # Track group members (non-bot users)
+        if is_group and member_repo and message.from_user and not message.from_user.is_bot:
+            await member_repo.upsert(ChatMember(
+                chat_id=message.chat.id,
+                user_id=message.from_user.id,
+                username=message.from_user.username,
+                first_name=message.from_user.first_name or "",
+            ))
+
         if is_group:
             global _bot_username
             if _bot_username is None:
                 _bot_username = (await message.bot.get_me()).username
-            if not message.text or f"@{_bot_username}" not in message.text:
+            raw_text = message.text or ""
+            has_mention = f"@{_bot_username}" in raw_text
+            has_keyword = raw_text.lower().startswith("бот ")
+            if not has_mention and not has_keyword:
                 return
-            # Strip the @mention before processing
-            text = message.text.replace(f"@{_bot_username}", "").strip()
+            if has_mention:
+                text = raw_text.replace(f"@{_bot_username}", "").strip()
+            else:
+                text = raw_text[4:].strip()  # strip "бот "
         else:
             text = message.text or ""
 
@@ -121,6 +138,19 @@ def setup_messages_router(
             )
             return
 
+        # Extract assignee @mention from text (any @word that isn't the bot)
+        import re
+        assignee_username: Optional[str] = None
+        mention_pattern = re.compile(r"@(\w+)")
+        for match in mention_pattern.finditer(text):
+            uname = match.group(1)
+            if _bot_username and uname.lower() == _bot_username.lower():
+                continue
+            assignee_username = uname
+            text = text[:match.start()].strip() + " " + text[match.end():].strip()
+            text = text.strip()
+            break
+
         # Otherwise treat as new task
         await message.answer("🔍 Понял, обрабатываю…")
         adapter = ManualAdapter(llm_client, tz_name=config.timezone)
@@ -134,9 +164,12 @@ def setup_messages_router(
             return
 
         for raw in tasks:
+            raw.assignee_username = assignee_username
             tmp_id = str(uuid.uuid4())
             _pending[tmp_id] = raw
             preview = f"📋 <b>Создать задачу?</b>\n\n{raw.title}"
+            if raw.assignee_username:
+                preview += f"\n👤 @{raw.assignee_username}"
             if raw.remind_at:
                 local_dt = raw.remind_at.astimezone(ZoneInfo(config.timezone))
                 preview += f"\n📅 {local_dt.strftime('%d.%m.%Y %H:%M')}"

@@ -8,7 +8,7 @@ from aiogram.types import Message
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from bot.config import Config
 from bot.db.models import Task, Priority, WatchedSource, User
-from bot.db.repository import TaskRepo, WatchedSourceRepo, UserRepo
+from bot.db.repository import TaskRepo, WatchedSourceRepo, UserRepo, ChatSettingsRepo
 from bot.keyboards.confirmation import confirm_keyboard
 from bot.keyboards.task_list import done_list_keyboard
 from typing import TYPE_CHECKING
@@ -24,6 +24,7 @@ def setup_commands_router(
     config: Config,
     scheduler: AsyncIOScheduler = None,
     bot: Bot = None,
+    settings_repo: ChatSettingsRepo = None,
 ) -> Router:
     router = Router()
 
@@ -63,6 +64,8 @@ def setup_commands_router(
             due = t.remind_at.astimezone(tz).strftime("%d.%m %H:%M") if t.remind_at else "—"
             emoji = {"high": "🔴", "medium": "🟡", "low": "🔵"}.get(t.priority.value, "⚪")
             text = f"{emoji} <b>{t.title}</b>\n📅 {due}"
+            if t.assignee_username:
+                text += f"\n👤 @{t.assignee_username}"
             if t.notes:
                 text += f"\n<i>{t.notes}</i>"
             from bot.keyboards.task_list import done_list_keyboard
@@ -78,8 +81,14 @@ def setup_commands_router(
 
     @router.message(Command("today"))
     async def cmd_today(message: Message) -> None:
-        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        tasks = await task_repo.list_today(chat_id=message.chat.id, date_str=today_str)
+        from datetime import timedelta
+        tz = ZoneInfo(config.timezone)
+        now_local = datetime.now(tz)
+        start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_local = start_local + timedelta(days=1)
+        start_utc = start_local.astimezone(timezone.utc)
+        end_utc = end_local.astimezone(timezone.utc)
+        tasks = await task_repo.list_today(chat_id=message.chat.id, start=start_utc, end=end_utc)
         if not tasks:
             await message.answer("На сегодня задач нет.")
             return
@@ -171,6 +180,51 @@ def setup_commands_router(
                     )
         except Exception as e:
             await msg.edit_text(f"❌ Ошибка синхронизации: {e}")
+
+    @router.message(Command("backup"))
+    async def cmd_backup(message: Message) -> None:
+        chat_id = config.backup_chat_id or message.chat.id
+        msg = await message.answer("⏳ Делаю бэкап...")
+        try:
+            from bot.backup.telegram_backup import send_backup
+            await send_backup(config.database_path, chat_id, message.bot)
+            target = "сюда" if chat_id == message.chat.id else f"в чат {chat_id}"
+            await msg.edit_text(f"✅ Бэкап отправлен {target}.")
+        except Exception as e:
+            import html
+            try:
+                await msg.edit_text(f"❌ Ошибка бэкапа:\n<code>{html.escape(str(e))}</code>", parse_mode="HTML")
+            except Exception:
+                await message.answer(f"❌ Ошибка бэкапа:\n{str(e)[:500]}")
+
+    @router.message(Command("chatid"))
+    async def cmd_chatid(message: Message) -> None:
+        await message.answer(f"ID этого чата: <code>{message.chat.id}</code>", parse_mode="HTML")
+
+    @router.message(Command("set_notify"))
+    async def cmd_set_notify(message: Message) -> None:
+        if not settings_repo:
+            await message.answer("Настройки недоступны.")
+            return
+        args = message.text.split(maxsplit=1)
+        if len(args) < 2:
+            await message.answer(
+                "Укажи ID группы уведомлений:\n"
+                "<code>/set_notify -1001234567890</code>\n\n"
+                "Узнать ID группы: напиши /chatid в той группе.",
+                parse_mode="HTML",
+            )
+            return
+        try:
+            notify_id = int(args[1].strip())
+        except ValueError:
+            await message.answer("Неверный формат. ID должен быть числом, например: -1001234567890")
+            return
+        await settings_repo.set_notify_chat(message.chat.id, notify_id)
+        await message.answer(
+            f"✅ Напоминания для этой группы будут отправляться в чат <code>{notify_id}</code>",
+            parse_mode="HTML",
+        )
 
     @router.message(Command("family"))
     async def cmd_family(message: Message) -> None:

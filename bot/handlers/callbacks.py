@@ -6,7 +6,7 @@ from aiogram.types import CallbackQuery
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from bot.config import Config
 from bot.db.models import Task, TaskStatus, Priority
-from bot.db.repository import TaskRepo
+from bot.db.repository import TaskRepo, ChatMemberRepo, ChatSettingsRepo
 from bot.keyboards.snooze import snooze_keyboard
 from bot.keyboards.reminder import reminder_keyboard
 from bot.handlers.snooze_fsm import CustomSnoozeStates, WatchStates
@@ -20,6 +20,8 @@ def setup_callbacks_router(
     bot: Bot,
     source_repo=None,
     llm_client=None,
+    member_repo: ChatMemberRepo = None,
+    settings_repo: ChatSettingsRepo = None,
 ) -> Router:
     router = Router()
 
@@ -43,6 +45,13 @@ def setup_callbacks_router(
         if raw is None:
             await callback.answer("Задача уже обработана.")
             return
+        chat_id = callback.message.chat.id
+        notify_chat_id = None
+        is_group = callback.message.chat.type in ("group", "supergroup")
+        if is_group and settings_repo:
+            settings = await settings_repo.get(chat_id)
+            if settings:
+                notify_chat_id = settings.notify_chat_id
         task = Task(
             title=raw.title,
             notes=raw.notes,
@@ -53,7 +62,9 @@ def setup_callbacks_router(
             remind_at=raw.remind_at or datetime.now(timezone.utc) + timedelta(hours=1),
             recurrence=raw.recurrence,
             owner_id=callback.from_user.id,
-            chat_id=callback.message.chat.id,
+            chat_id=chat_id,
+            assignee_username=getattr(raw, "assignee_username", None),
+            notify_chat_id=notify_chat_id,
         )
         await task_repo.save(task)
         from bot.scheduler.jobs import task_reminder_job
@@ -73,6 +84,35 @@ def setup_callbacks_router(
         await callback.message.edit_text(
             f"✅ Задача сохранена: <b>{task.title}</b>", parse_mode="HTML"
         )
+        # In group chats without explicit assignee — suggest who to assign
+        is_group = callback.message.chat.type in ("group", "supergroup")
+        if is_group and not task.assignee_username and member_repo:
+            members = await member_repo.list_for_chat(task.chat_id)
+            if members:
+                from aiogram.utils.keyboard import InlineKeyboardBuilder
+                from aiogram.types import InlineKeyboardButton
+                builder = InlineKeyboardBuilder()
+                for m in members:
+                    label = f"@{m.username}" if m.username else m.first_name
+                    value = m.username or str(m.user_id)
+                    builder.button(text=label, callback_data=f"assign:{task.id}:{value}")
+                builder.button(text="Без назначения", callback_data=f"assign:{task.id}:none")
+                builder.adjust(2)
+                await callback.message.answer(
+                    "👤 Кому назначить задачу?",
+                    reply_markup=builder.as_markup(),
+                )
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("assign:"))
+    async def on_assign(callback: CallbackQuery) -> None:
+        parts = callback.data.split(":", 2)
+        task_id, value = parts[1], parts[2]
+        if value != "none":
+            await task_repo.update_assignee_username(task_id, value)
+            await callback.message.edit_text(f"👤 Назначено: @{value}")
+        else:
+            await callback.message.edit_text("👤 Без назначения.")
         await callback.answer()
 
     @router.callback_query(F.data.startswith("confirm:skip:"))

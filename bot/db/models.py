@@ -35,7 +35,9 @@ class Task:
     snoozed_until: Optional[datetime] = None
     snooze_count: int = 0
     assignee_id: Optional[int] = None
+    assignee_username: Optional[str] = None
     is_family: bool = False
+    notify_chat_id: Optional[int] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     google_task_id: Optional[str] = None
@@ -70,3 +72,17 @@ class User:
     username: Optional[str] = None
     family_chat_id: Optional[int] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+@dataclass
+class ChatSettings:
+    chat_id: int
+    notify_chat_id: Optional[int] = None
+
+
+@dataclass
+class ChatMember:
+    chat_id: int
+    user_id: int
+    username: Optional[str] = None
+    first_name: str = ""

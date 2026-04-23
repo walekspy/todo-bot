@@ -6,7 +6,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 from bot.config import load_config
 from bot.db.database import get_connection
-from bot.db.repository import TaskRepo, WatchedSourceRepo, UserRepo
+from bot.db.repository import TaskRepo, WatchedSourceRepo, UserRepo, ChatMemberRepo, ChatSettingsRepo
 from bot.scheduler.setup import build_scheduler
 from aiogram.fsm.storage.memory import MemoryStorage
 from bot.handlers.commands import setup_commands_router
@@ -29,6 +29,8 @@ async def main() -> None:
         task_repo = TaskRepo(conn)
         source_repo = WatchedSourceRepo(conn)
         user_repo = UserRepo(conn)
+        member_repo = ChatMemberRepo(conn)
+        settings_repo = ChatSettingsRepo(conn)
 
         llm_client = build_llm_client(config.llm_provider, config.llm_api_key, config.llm_model)
 
@@ -43,12 +45,15 @@ async def main() -> None:
         # Build routers (scheduler and bot passed for job registration)
         commands_router = setup_commands_router(
             task_repo, source_repo, user_repo, llm_client, config,
-            scheduler=scheduler, bot=bot,
+            scheduler=scheduler, bot=bot, settings_repo=settings_repo,
         )
-        messages_router, pending_tasks = setup_messages_router(llm_client, config, task_repo)
+        messages_router, pending_tasks = setup_messages_router(
+            llm_client, config, task_repo, member_repo=member_repo
+        )
         callbacks_router = setup_callbacks_router(
             task_repo, config, pending_tasks, scheduler=scheduler, bot=bot,
             source_repo=source_repo, llm_client=llm_client,
+            member_repo=member_repo, settings_repo=settings_repo,
         )
 
         snooze_fsm_router = setup_snooze_fsm_router(
@@ -100,20 +105,20 @@ async def main() -> None:
                 },
             )
 
-        # Daily backup at 03:00 UTC (persistent jobstore — survives restarts)
-        if config.gdrive_backup_folder_id:
+        # Daily backup at 03:00 UTC
+        if config.backup_chat_id:
+            from bot.scheduler.jobs import backup_job
             scheduler.add_job(
-                "bot.scheduler.jobs:backup_job",
+                backup_job,
                 trigger="cron",
                 hour=3,
                 minute=0,
                 id="daily_backup",
-                jobstore="persistent",
                 replace_existing=True,
                 kwargs={
                     "db_path": str(config.database_path),
-                    "gdrive_folder_id": config.gdrive_backup_folder_id,
-                    "service_account_json": str(config.gdrive_service_account_json),
+                    "backup_chat_id": config.backup_chat_id,
+                    "bot": bot,
                 },
             )
 
@@ -126,6 +131,9 @@ async def main() -> None:
             BotCommand(command="watch", description="Следить за Google Doc"),
             BotCommand(command="sources", description="Наблюдаемые документы"),
             BotCommand(command="family", description="Задачи семейной группы"),
+            BotCommand(command="backup", description="Бэкап БД в Telegram прямо сейчас"),
+            BotCommand(command="chatid", description="Показать ID этого чата"),
+            BotCommand(command="set_notify", description="Установить группу уведомлений"),
         ])
 
         logger.info("Bot started. %d pending reminders scheduled.", len(pending_tasks_list))

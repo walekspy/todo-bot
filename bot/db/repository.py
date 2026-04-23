@@ -1,7 +1,7 @@
 import aiosqlite
 from datetime import datetime, timezone
 from typing import Optional
-from bot.db.models import Task, TaskStatus, Priority, WatchedSource, WatchedSheet, User
+from bot.db.models import Task, TaskStatus, Priority, WatchedSource, WatchedSheet, User, ChatMember, ChatSettings
 
 
 def _parse_dt(s: Optional[str]) -> Optional[datetime]:
@@ -33,6 +33,8 @@ def _row_to_task(row: aiosqlite.Row) -> Task:
         snooze_count=row["snooze_count"],
         owner_id=row["owner_id"],
         assignee_id=row["assignee_id"],
+        assignee_username=row["assignee_username"] if "assignee_username" in keys else None,
+        notify_chat_id=row["notify_chat_id"] if "notify_chat_id" in keys else None,
         chat_id=row["chat_id"],
         is_family=bool(row["is_family"]),
         created_at=_parse_dt(row["created_at"]),
@@ -52,18 +54,20 @@ class TaskRepo:
             """INSERT INTO tasks
                (id, title, notes, status, priority, source, source_ref,
                 due_at, remind_at, recurrence, snoozed_until, snooze_count,
-                owner_id, assignee_id, chat_id, is_family, created_at,
+                owner_id, assignee_id, assignee_username, notify_chat_id,
+                chat_id, is_family, created_at,
                 updated_at, google_task_id, google_tasklist_id, google_updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 task.id, task.title, task.notes, task.status.value,
                 task.priority.value, task.source, task.source_ref,
                 _fmt_dt(task.due_at), _fmt_dt(task.remind_at),
                 task.recurrence, _fmt_dt(task.snoozed_until),
                 task.snooze_count, task.owner_id, task.assignee_id,
-                task.chat_id, int(task.is_family), _fmt_dt(task.created_at),
-                _fmt_dt(task.updated_at), task.google_task_id,
-                task.google_tasklist_id, _fmt_dt(task.google_updated_at),
+                task.assignee_username, task.notify_chat_id,
+                task.chat_id, int(task.is_family),
+                _fmt_dt(task.created_at), _fmt_dt(task.updated_at),
+                task.google_task_id, task.google_tasklist_id, _fmt_dt(task.google_updated_at),
             ),
         )
         await self.conn.commit()
@@ -93,13 +97,14 @@ class TaskRepo:
         ) as cursor:
             return [_row_to_task(r) for r in await cursor.fetchall()]
 
-    async def list_today(self, chat_id: int, date_str: str) -> list[Task]:
-        """Return non-done tasks for chat_id whose remind_at falls on date_str (UTC, format: YYYY-MM-DD)."""
+    async def list_today(self, chat_id: int, start: datetime, end: datetime) -> list[Task]:
+        """Return non-done tasks for chat_id whose remind_at falls in [start, end)."""
         async with self.conn.execute(
             """SELECT * FROM tasks
-               WHERE chat_id = ? AND remind_at LIKE ? AND status NOT IN ('done','cancelled')
+               WHERE chat_id = ? AND remind_at >= ? AND remind_at < ?
+                 AND status NOT IN ('done','cancelled')
                ORDER BY remind_at""",
-            (chat_id, f"{date_str}%"),
+            (chat_id, _fmt_dt(start), _fmt_dt(end)),
         ) as cursor:
             return [_row_to_task(r) for r in await cursor.fetchall()]
 
@@ -171,6 +176,13 @@ class TaskRepo:
         await self.conn.execute(
             "UPDATE tasks SET assignee_id = ? WHERE id = ?",
             (assignee_id, task_id),
+        )
+        await self.conn.commit()
+
+    async def update_assignee_username(self, task_id: str, username: str) -> None:
+        await self.conn.execute(
+            "UPDATE tasks SET assignee_username = ? WHERE id = ?",
+            (username, task_id),
         )
         await self.conn.commit()
 
@@ -352,3 +364,57 @@ class WatchedSheetRepo:
             (chat_id, telegram_id),
         )
         await self.conn.commit()
+
+
+class ChatSettingsRepo:
+    def __init__(self, conn: aiosqlite.Connection):
+        self.conn = conn
+
+    async def set_notify_chat(self, chat_id: int, notify_chat_id: int) -> None:
+        await self.conn.execute(
+            """INSERT INTO chat_settings (chat_id, notify_chat_id)
+               VALUES (?,?)
+               ON CONFLICT(chat_id) DO UPDATE SET notify_chat_id=excluded.notify_chat_id""",
+            (chat_id, notify_chat_id),
+        )
+        await self.conn.commit()
+
+    async def get(self, chat_id: int) -> Optional[ChatSettings]:
+        async with self.conn.execute(
+            "SELECT * FROM chat_settings WHERE chat_id = ?", (chat_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            return ChatSettings(chat_id=row["chat_id"], notify_chat_id=row["notify_chat_id"])
+
+
+class ChatMemberRepo:
+    def __init__(self, conn: aiosqlite.Connection):
+        self.conn = conn
+
+    async def upsert(self, member: ChatMember) -> None:
+        await self.conn.execute(
+            """INSERT INTO chat_members (chat_id, user_id, username, first_name)
+               VALUES (?,?,?,?)
+               ON CONFLICT(chat_id, user_id) DO UPDATE SET
+                   username=excluded.username,
+                   first_name=excluded.first_name""",
+            (member.chat_id, member.user_id, member.username, member.first_name),
+        )
+        await self.conn.commit()
+
+    async def list_for_chat(self, chat_id: int) -> list[ChatMember]:
+        async with self.conn.execute(
+            "SELECT * FROM chat_members WHERE chat_id = ? ORDER BY first_name",
+            (chat_id,),
+        ) as cursor:
+            return [
+                ChatMember(
+                    chat_id=r["chat_id"],
+                    user_id=r["user_id"],
+                    username=r["username"],
+                    first_name=r["first_name"],
+                )
+                for r in await cursor.fetchall()
+            ]

@@ -59,6 +59,23 @@ CREATE TABLE IF NOT EXISTS users (
 )
 """
 
+CREATE_CHAT_SETTINGS_TABLE = """
+CREATE TABLE IF NOT EXISTS chat_settings (
+    chat_id INTEGER PRIMARY KEY,
+    notify_chat_id INTEGER
+)
+"""
+
+CREATE_CHAT_MEMBERS_TABLE = """
+CREATE TABLE IF NOT EXISTS chat_members (
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    username TEXT,
+    first_name TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (chat_id, user_id)
+)
+"""
+
 
 async def create_tables(conn: aiosqlite.Connection) -> None:
     await conn.execute("PRAGMA foreign_keys = ON")
@@ -66,12 +83,16 @@ async def create_tables(conn: aiosqlite.Connection) -> None:
     await conn.execute(CREATE_WATCHED_SOURCES_TABLE)
     await conn.execute(CREATE_WATCHED_SHEETS_TABLE)
     await conn.execute(CREATE_USERS_TABLE)
+    await conn.execute(CREATE_CHAT_SETTINGS_TABLE)
+    await conn.execute(CREATE_CHAT_MEMBERS_TABLE)
     # Migrations: add new columns if they don't exist yet
     for col, definition in [
         ("updated_at", "TEXT"),
         ("google_task_id", "TEXT"),
         ("google_tasklist_id", "TEXT"),
         ("google_updated_at", "TEXT"),
+        ("assignee_username", "TEXT"),
+        ("notify_chat_id", "INTEGER"),
     ]:
         try:
             await conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} {definition}")

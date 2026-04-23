@@ -16,6 +16,8 @@ async def send_task_reminder(bot: Bot, task: Task, config: Config) -> None:
     text = f"🔔 <b>Напоминание</b>\n\n{emoji} {task.title}"
     if task.notes:
         text += f"\n<i>{task.notes}</i>"
+    if task.assignee_username:
+        text += f"\n👤 @{task.assignee_username}"
 
     if task.snooze_count >= config.escalation_snooze_count:
         markup = escalation_keyboard(task.id)
@@ -24,7 +26,7 @@ async def send_task_reminder(bot: Bot, task: Task, config: Config) -> None:
         markup = reminder_keyboard(task.id)
 
     await bot.send_message(
-        chat_id=task.chat_id,
+        chat_id=task.notify_chat_id or task.chat_id,
         text=text,
         parse_mode="HTML",
         reply_markup=markup,

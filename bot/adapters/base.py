@@ -15,6 +15,7 @@ class RawTask:
     recurrence: Optional[str] = None
     source: str = "manual"
     source_ref: Optional[str] = None
+    assignee_username: Optional[str] = None
 
 
 class SourceAdapter(ABC):

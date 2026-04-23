@@ -14,6 +14,7 @@ class Config:
     database_path: Path
     gdrive_service_account_json: Path
     gdrive_backup_folder_id: Optional[str]
+    backup_chat_id: Optional[int]
     snooze_morning_hour: int
     night_start_hour: int   # start of night window (e.g. 23)
     night_end_hour: int     # end of night window / wake hour (e.g. 7)
@@ -43,6 +44,7 @@ def load_config() -> Config:
             os.getenv("GDRIVE_SERVICE_ACCOUNT_JSON", "credentials/service_account.json")
         ),
         gdrive_backup_folder_id=os.getenv("GDRIVE_BACKUP_FOLDER_ID") or None,
+        backup_chat_id=int(bc) if (bc := os.getenv("BACKUP_CHAT_ID")) else None,
         snooze_morning_hour=int(os.getenv("SNOOZE_MORNING_HOUR", "9")),
         night_start_hour=int(os.getenv("NIGHT_START_HOUR", "23")),
         night_end_hour=int(os.getenv("NIGHT_END_HOUR", "7")),
