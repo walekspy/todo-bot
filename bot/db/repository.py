@@ -379,6 +379,13 @@ class ChatSettingsRepo:
         )
         await self.conn.commit()
 
+    async def clear_notify_chat(self, chat_id: int) -> None:
+        """Remove the notify_chat_id routing for this chat (reminders go back to source chat)."""
+        await self.conn.execute(
+            "DELETE FROM chat_settings WHERE chat_id = ?", (chat_id,)
+        )
+        await self.conn.commit()
+
     async def get(self, chat_id: int) -> Optional[ChatSettings]:
         async with self.conn.execute(
             "SELECT * FROM chat_settings WHERE chat_id = ?", (chat_id,)

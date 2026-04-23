@@ -47,8 +47,7 @@ def setup_callbacks_router(
             return
         chat_id = callback.message.chat.id
         notify_chat_id = None
-        is_group = callback.message.chat.type in ("group", "supergroup")
-        if is_group and settings_repo:
+        if settings_repo:
             settings = await settings_repo.get(chat_id)
             if settings:
                 notify_chat_id = settings.notify_chat_id
@@ -393,6 +392,7 @@ def setup_callbacks_router(
                 llm_client=llm_client,
                 config=config,
                 report_chat_id=callback.message.chat.id,
+                settings_repo=settings_repo,
             )
             await callback.message.edit_text("✅ Проверка завершена.")
         except Exception as e:

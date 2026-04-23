@@ -32,9 +32,11 @@ def setup_snooze_fsm_router(
     scheduler: AsyncIOScheduler,
     bot: Bot,
     source_repo=None,
+    settings_repo=None,
 ) -> Router:
     router = Router()
     _source_repo = source_repo
+    _settings_repo = settings_repo
 
     @router.message(CustomSnoozeStates.waiting_for_time)
     async def on_custom_time_input(message: Message, state: FSMContext) -> None:
@@ -184,6 +186,7 @@ def setup_snooze_fsm_router(
                     "source_repo": _source_repo,
                     "llm_client": llm_client,
                     "config": config,
+                    "settings_repo": _settings_repo,
                 },
             )
         await message.answer(
@@ -270,6 +273,7 @@ def setup_snooze_fsm_router(
                     "source_repo": _source_repo,
                     "llm_client": llm_client,
                     "config": config,
+                    "settings_repo": _settings_repo,
                 },
             )
 

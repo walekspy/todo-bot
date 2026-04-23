@@ -1,9 +1,10 @@
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 from aiogram import Bot
 from bot.config import Config
 from bot.db.models import TaskStatus
-from bot.db.repository import TaskRepo, WatchedSourceRepo
+from bot.db.repository import TaskRepo, WatchedSourceRepo, ChatSettingsRepo
 from bot.notifications.sender import send_task_reminder, send_event_alert
 from bot.llm.doc_analyzer import analyze_doc
 from bot.adapters.google_doc import fetch_doc_content
@@ -30,6 +31,16 @@ async def task_reminder_job(
     await send_task_reminder(bot, task, config)
 
 
+async def _resolve_alert_chat(settings_repo: Optional[ChatSettingsRepo], source_chat_id: int) -> int:
+    """Route Google Doc event alerts to notify_chat_id if set, else back to source chat."""
+    if settings_repo is None:
+        return source_chat_id
+    settings = await settings_repo.get(source_chat_id)
+    if settings and settings.notify_chat_id:
+        return settings.notify_chat_id
+    return source_chat_id
+
+
 async def doc_check_job(
     source_id: str,
     bot: Bot,
@@ -37,6 +48,7 @@ async def doc_check_job(
     llm_client: anthropic.AsyncAnthropic,
     config: Config,
     report_chat_id: int = None,
+    settings_repo: Optional[ChatSettingsRepo] = None,
 ) -> None:
     sources = await source_repo.list_all()
     source = next((s for s in sources if s.id == source_id), None)
@@ -47,14 +59,14 @@ async def doc_check_job(
     now = datetime.now(timezone.utc).date()
 
     if source.source_type == "google_sheet":
-        await _check_google_sheet(source, bot, source_repo, llm_client, config, now, report_chat_id)
+        await _check_google_sheet(source, bot, source_repo, llm_client, config, now, report_chat_id, settings_repo)
     else:
-        await _check_google_doc(source, bot, source_repo, llm_client, config, now, report_chat_id)
+        await _check_google_doc(source, bot, source_repo, llm_client, config, now, report_chat_id, settings_repo)
 
     await source_repo.update_last_checked(source_id, datetime.now(timezone.utc))
 
 
-async def _check_google_doc(source, bot, source_repo, llm_client, config, now, report_chat_id):
+async def _check_google_doc(source, bot, source_repo, llm_client, config, now, report_chat_id, settings_repo=None):
     try:
         content = await fetch_doc_content(source.url)
     except ValueError as e:
@@ -63,18 +75,19 @@ async def _check_google_doc(source, bot, source_repo, llm_client, config, now, r
 
     events = await analyze_doc(llm_client, content, reminder_lead_days_hint=None)
 
+    alert_chat = await _resolve_alert_chat(settings_repo, source.chat_id)
     alerted = 0
     for event in events:
         days_until = (event.date - now).days
         if 0 <= days_until <= event.reminder_lead_days:
-            await send_event_alert(bot, source.chat_id, event, config)
+            await send_event_alert(bot, alert_chat, event, config)
             alerted += 1
 
     if report_chat_id is not None:
         await _send_report(bot, report_chat_id, events, now)
 
 
-async def _check_google_sheet(source, bot, source_repo, llm_client, config, now, report_chat_id):
+async def _check_google_sheet(source, bot, source_repo, llm_client, config, now, report_chat_id, settings_repo=None):
     import asyncio
     from bot.adapters.google_sheet import fetch_sheet_content
     from bot.db.repository import WatchedSheetRepo
@@ -82,6 +95,7 @@ async def _check_google_sheet(source, bot, source_repo, llm_client, config, now,
     sheet_repo = WatchedSheetRepo(source_repo.conn)
     sheets = await sheet_repo.list_for_source(source.id)
 
+    alert_chat = await _resolve_alert_chat(settings_repo, source.chat_id)
     all_report_lines = []
     for sheet in sheets:
         if not sheet.enabled:
@@ -108,7 +122,7 @@ async def _check_google_sheet(source, bot, source_repo, llm_client, config, now,
         for event in events:
             days_until = (event.date - now).days
             if 0 <= days_until <= event.reminder_lead_days:
-                await send_event_alert(bot, source.chat_id, event, config)
+                await send_event_alert(bot, alert_chat, event, config)
 
         if report_chat_id is not None and events:
             all_report_lines.append(f"\n📊 <b>{sheet.sheet_name}</b> (за {sheet.reminder_lead_days} дн.):")
