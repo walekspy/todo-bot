@@ -37,6 +37,9 @@ CORRECTION EXAMPLES:
 - "завтрака" → "завтра"
 - "память" → ignore as noise
 - "вот поставь задать в через 2 минута" → title="задача", time_expression="через 2 минуты"
+- "поставь напоминание через 2 минуты" → title="напоминание", time_expression="через 2 минуты"
+- "напомни через 5 минут" → title="напоминание", time_expression="через 5 минут"
+- NO task specified, only time like "через 3 минуты" → title="напоминание"
 
 STT ARTIFACTS TO IGNORE: filler words like "вот", "ну", "типа", repeated words, partial words at boundaries.
 
@@ -57,8 +60,12 @@ _IMPERATIVE_RE = re.compile(
 
 
 def _preprocess_text(text: str) -> str:
-    """Strip imperative command words that make the LLM think it should act."""
-    return _IMPERATIVE_RE.sub('', text).strip()
+    """Light cleanup — strip leading @mention if present, keep everything else for LLM to interpret."""
+    # Remove @botname at the start of the text (already handled in handler, but double-safe)
+    text = re.sub(r'^@\w+\s+', '', text)
+    # Remove common filler words at the START only, keep the rest for context
+    text = re.sub(r'^(ну\s+|вот\s+|типа\s+|собственно\s+)+', '', text, flags=re.IGNORECASE)
+    return text.strip()
 
 
 def _strip_preposition(expr: str) -> str:
