@@ -32,7 +32,7 @@ async def main() -> None:
         member_repo = ChatMemberRepo(conn)
         settings_repo = ChatSettingsRepo(conn)
 
-        llm_client = build_llm_client(config.llm_provider, config.llm_api_key, config.llm_model)
+        llm_client = build_llm_client(config.llm_provider, config.llm_api_key, config.llm_model, config.llm_fallback_key)
 
         bot = Bot(token=config.bot_token)
         dp = Dispatcher(storage=MemoryStorage())
