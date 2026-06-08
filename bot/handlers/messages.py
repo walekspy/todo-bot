@@ -151,15 +151,18 @@ def setup_messages_router(
             global _bot_username
             if _bot_username is None:
                 _bot_username = (await message.bot.get_me()).username
-            raw_text = message.text or ""
-            has_mention = f"@{_bot_username}" in raw_text
-            has_keyword = raw_text.lower().startswith("бот ")
+            # Use the ACTUAL text (transcribed for voice, message.text for text)
+            # to check for @mention or "бот" trigger
+            effective_text = text or message.text or ""
+            has_mention = f"@{_bot_username}" in effective_text
+            has_keyword = effective_text.lower().startswith("бот ")
             if not has_mention and not has_keyword:
                 return
+            # Strip trigger words from the text we actually have
             if has_mention:
-                text = raw_text.replace(f"@{_bot_username}", "").strip()
+                text = effective_text.replace(f"@{_bot_username}", "").strip()
             else:
-                text = raw_text[4:].strip()  # strip "бот "
+                text = effective_text[4:].strip()
         else:
             text = message.text or ""
 
