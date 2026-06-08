@@ -123,13 +123,14 @@ def setup_messages_router(
             await message.answer("Не удалось распознать голос.")
             return
 
-        # Reuse text handler logic by creating a synthetic text message
-        message.text = text
-        await handle_text(message)
+        await _process_text(message, text)
 
     @router.message(F.text)
     async def handle_text(message: Message) -> None:
-        if message.text and message.text.startswith("/"):
+        await _process_text(message, message.text or "")
+
+    async def _process_text(message: Message, text: str) -> None:
+        if text.startswith("/"):
             return  # ignore commands — handled by commands router
 
         # In group chats only respond when bot is @mentioned
