@@ -156,6 +156,10 @@ async def extract_tasks(
     try:
         raw_json = _strip_json_fences(raw_json)
         items = json.loads(raw_json.strip())
+        # LLM returned empty array — treat as no tasks, use fallback
+        if not items:
+            logger.info("extract_tasks: LLM returned empty array, using dateparser fallback")
+            items = None
     except (json.JSONDecodeError, IndexError) as e:
         logger.warning("extract_tasks: unparseable LLM response: %s", e)
         # Fallback 1: try to find a JSON array embedded in the text
@@ -170,7 +174,6 @@ async def extract_tasks(
             items = None
         # Fallback 2: use cleaned text as a bare task, try to extract time ourselves
         if not items:
-            # Try to find time expressions in the text using dateparser search
             title = clean_text.strip()
             time_expr = None
             parsed_time = None
@@ -182,19 +185,21 @@ async def extract_tasks(
                 })
                 if date_results:
                     time_str, parsed_time = date_results[0]
-                    # Remove the time expression from the title
                     title = clean_text.replace(time_str, "").strip()
-                    # Also clean up common connectors left behind
-                    title = re.sub(r'\s*[,;]\s*$', '', title)
-                    title = re.sub(r'^\s*[,;]\s*', '', title)
                     time_expr = time_str
                     logger.info("extract_tasks: dateparser found time %r -> %s", time_str, parsed_time)
             except Exception as de:
                 logger.debug("extract_tasks: search_dates failed: %s", de)
 
-            items = [{"title": title or clean_text.strip(), "notes": None, "priority": "medium",
-                       "time_expression": time_expr, "recurrence": None}]
-            logger.info("extract_tasks: using raw text as fallback task")
+            # Fallback title: if title is empty or just noise, use "напоминание"
+            title = title.strip()
+            noise_words = {"поставим", "поставь", "поставить", "в", "задачу", "задание", "напоминание", "напомни", "создай", "добавь", "ну", "вот"}
+            title_words = [w for w in re.split(r'\s+', title.lower()) if w and w not in noise_words]
+            title = " ".join(title_words) if title_words else "напоминание"
+
+            items = [{"title": title, "notes": None, "priority": "medium",
+                     "time_expression": time_expr, "recurrence": None}]
+            logger.info("extract_tasks: using raw text as fallback task: title=%r, time=%r", title, time_expr)
 
     tasks = []
     for item in items:
