@@ -14,6 +14,16 @@ from bot.config import Config
 # Pending RawTask objects awaiting user confirmation: {tmp_id: RawTask}
 _pending: dict = {}
 
+# Lazy-loaded Whisper model singleton to avoid reloading on every voice message
+_whisper_model = None
+
+def _get_whisper_model():
+    global _whisper_model
+    if _whisper_model is None:
+        from faster_whisper import WhisperModel
+        _whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
+    return _whisper_model
+
 # Cached bot username for group mention check
 _bot_username: Optional[str] = None
 
@@ -88,7 +98,6 @@ def setup_messages_router(
 
     @router.message(F.voice)
     async def handle_voice(message: Message) -> None:
-        from faster_whisper import WhisperModel
         import tempfile, os
 
         await message.answer("🎙 Распознаю голос…")
@@ -103,7 +112,7 @@ def setup_messages_router(
         wav_path = ogg_path.replace(".ogg", ".wav")
         os.system(f"ffmpeg -y -i {ogg_path} -ar 16000 -ac 1 -c:a pcm_s16le {wav_path} >/dev/null 2>&1")
 
-        model = WhisperModel("base", device="cpu", compute_type="int8")
+        model = _get_whisper_model()
         segments, info = model.transcribe(wav_path, beam_size=5, language="ru")
         text = "".join([seg.text for seg in segments]).strip()
 
