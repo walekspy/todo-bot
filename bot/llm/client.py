@@ -52,12 +52,13 @@ class LLMClient:
     async def _complete_hermes(self, system: str, user: str) -> str:
         import openai
         client = openai.AsyncOpenAI(api_key=self.api_key, base_url=HERMES_BASE_URL)
+        # Hermes API doesn't support system role, merge into user message
+        combined_prompt = f"{system}\n\n{user}"
         response = await client.chat.completions.create(
             model=self.model,
             max_tokens=2048,
             messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
+                {"role": "user", "content": combined_prompt},
             ],
         )
         return response.choices[0].message.content
