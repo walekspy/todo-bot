@@ -172,34 +172,35 @@ async def extract_tasks(
                 items = None
         else:
             items = None
-        # Fallback 2: use cleaned text as a bare task, try to extract time ourselves
-        if not items:
-            title = clean_text.strip()
-            time_expr = None
-            parsed_time = None
-            try:
-                date_results = search_dates(clean_text, languages=["ru", "en"], settings={
-                    "TIMEZONE": tz_name,
-                    "RETURN_AS_TIMEZONE_AWARE": True,
-                    "PREFER_DATES_FROM": "future",
-                })
-                if date_results:
-                    time_str, parsed_time = date_results[0]
-                    title = clean_text.replace(time_str, "").strip()
-                    time_expr = time_str
-                    logger.info("extract_tasks: dateparser found time %r -> %s", time_str, parsed_time)
-            except Exception as de:
-                logger.debug("extract_tasks: search_dates failed: %s", de)
 
-            # Fallback title: if title is empty or just noise, use "напоминание"
-            title = title.strip()
-            noise_words = {"поставим", "поставь", "поставить", "в", "задачу", "задание", "напоминание", "напомни", "создай", "добавь", "ну", "вот"}
-            title_words = [w for w in re.split(r'\s+', title.lower()) if w and w not in noise_words]
-            title = " ".join(title_words) if title_words else "напоминание"
+    # Fallback 2: use cleaned text as a bare task, try to extract time ourselves
+    if not items:
+        title = clean_text.strip()
+        time_expr = None
+        parsed_time = None
+        try:
+            date_results = search_dates(clean_text, languages=["ru", "en"], settings={
+                "TIMEZONE": tz_name,
+                "RETURN_AS_TIMEZONE_AWARE": True,
+                "PREFER_DATES_FROM": "future",
+            })
+            if date_results:
+                time_str, parsed_time = date_results[0]
+                title = clean_text.replace(time_str, "").strip()
+                time_expr = time_str
+                logger.info("extract_tasks: dateparser found time %r -> %s", time_str, parsed_time)
+        except Exception as de:
+            logger.debug("extract_tasks: search_dates failed: %s", de)
 
-            items = [{"title": title, "notes": None, "priority": "medium",
-                     "time_expression": time_expr, "recurrence": None}]
-            logger.info("extract_tasks: using raw text as fallback task: title=%r, time=%r", title, time_expr)
+        # Fallback title: if title is empty or just noise, use "напоминание"
+        title = title.strip()
+        noise_words = {"поставим", "поставь", "поставить", "в", "задачу", "задание", "напоминание", "напомни", "создай", "добавь", "ну", "вот"}
+        title_words = [w for w in re.split(r'\s+', title.lower()) if w and w not in noise_words]
+        title = " ".join(title_words) if title_words else "напоминание"
+
+        items = [{"title": title, "notes": None, "priority": "medium",
+                 "time_expression": time_expr, "recurrence": None}]
+        logger.info("extract_tasks: using raw text as fallback task: title=%r, time=%r", title, time_expr)
 
     tasks = []
     for item in items:
