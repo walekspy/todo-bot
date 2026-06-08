@@ -86,6 +86,38 @@ def setup_messages_router(
                 reply_markup=confirm_keyboard(tmp_id),
             )
 
+    @router.message(F.voice)
+    async def handle_voice(message: Message) -> None:
+        from faster_whisper import WhisperModel
+        import tempfile, os
+
+        await message.answer("🎙 Распознаю голос…")
+
+        file = await message.bot.get_file(message.voice.file_id)
+        ogg_bytes = await message.bot.download_file(file.file_path)
+
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp_ogg:
+            tmp_ogg.write(ogg_bytes.read())
+            ogg_path = tmp_ogg.name
+
+        wav_path = ogg_path.replace(".ogg", ".wav")
+        os.system(f"ffmpeg -y -i {ogg_path} -ar 16000 -ac 1 -c:a pcm_s16le {wav_path} >/dev/null 2>&1")
+
+        model = WhisperModel("base", device="cpu", compute_type="int8")
+        segments, info = model.transcribe(wav_path, beam_size=5, language="ru")
+        text = "".join([seg.text for seg in segments]).strip()
+
+        os.unlink(ogg_path)
+        os.unlink(wav_path)
+
+        if not text:
+            await message.answer("Не удалось распознать голос.")
+            return
+
+        # Reuse text handler logic by creating a synthetic text message
+        message.text = text
+        await handle_text(message)
+
     @router.message(F.text)
     async def handle_text(message: Message) -> None:
         if message.text and message.text.startswith("/"):
