@@ -123,6 +123,8 @@ def setup_messages_router(
             await message.answer("Не удалось распознать голос.")
             return
 
+        # Echo recognized text so user can verify STT accuracy
+        await message.answer(f"🗣 Услышал: <i>{text}</i>", parse_mode="HTML")
         await _process_text(message, text)
 
     @router.message(F.text)
