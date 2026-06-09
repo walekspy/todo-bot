@@ -1,4 +1,6 @@
 import uuid
+import logging
+logger = logging.getLogger(__name__)
 from typing import Optional
 from zoneinfo import ZoneInfo
 from aiogram import Router, F
@@ -125,6 +127,7 @@ def setup_messages_router(
 
         # Echo recognized text so user can verify STT accuracy
         await message.answer(f"🗣 Услышал: <i>{text}</i>", parse_mode="HTML")
+        logger.info("handle_voice: calling _process_text with text=%r", text)
         await _process_text(message, text)
 
     @router.message(F.text)
