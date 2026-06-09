@@ -181,13 +181,11 @@ async def extract_tasks(
         # Use ORIGINAL text for dateparser — STT artifacts may confuse it
         # but time expressions like "через 2 минуты" survive
         try:
-            logger.info("extract_tasks: fallback text=%r clean_text=%r tz=%r", text, clean_text, tz_name)
             date_results = search_dates(text, languages=["ru", "en"], settings={
                 "TIMEZONE": tz_name,
                 "RETURN_AS_TIMEZONE_AWARE": True,
                 "PREFER_DATES_FROM": "future",
             })
-            logger.info("extract_tasks: dateparser date_results=%r", date_results)
             if date_results:
                 time_str, parsed_time = date_results[0]
                 title = clean_text.replace(time_str, "").strip()
