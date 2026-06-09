@@ -167,7 +167,8 @@ def setup_messages_router(
             else:
                 text = effective_text[4:].strip()
         else:
-            text = message.text or ""
+            # Preserve whisper transcription if passed, otherwise use message.text
+            text = text or message.text or ""
 
         # Check if user is reporting a completed task (variant В)
         query = _completion_query(text)
