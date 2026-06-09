@@ -186,6 +186,7 @@ async def extract_tasks(
                 "RETURN_AS_TIMEZONE_AWARE": True,
                 "PREFER_DATES_FROM": "future",
             })
+            logger.info("extract_tasks: dateparser date_results=%r", date_results)
             if date_results:
                 time_str, parsed_time = date_results[0]
                 title = clean_text.replace(time_str, "").strip()
