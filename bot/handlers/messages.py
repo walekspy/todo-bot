@@ -155,14 +155,15 @@ def setup_messages_router(
             # to check for @mention or "бот" trigger
             effective_text = text or message.text or ""
             has_mention = f"@{_bot_username}" in effective_text
-            has_keyword = effective_text.lower().startswith("бот ")
+            has_keyword = "бот" in effective_text.lower()
             if not has_mention and not has_keyword:
                 return
             # Strip trigger words from the text we actually have
             if has_mention:
                 text = effective_text.replace(f"@{_bot_username}", "").strip()
             else:
-                text = effective_text[4:].strip()
+                # Remove "бот" from anywhere in text (beginning, middle, end)
+                text = effective_text.lower().replace("бот", "").strip()
         else:
             # Preserve whisper transcription if passed, otherwise use message.text
             text = text or message.text or ""
