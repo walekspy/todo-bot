@@ -178,8 +178,10 @@ async def extract_tasks(
         title = clean_text.strip()
         time_expr = None
         parsed_time = None
+        # Use ORIGINAL text for dateparser — STT artifacts may confuse it
+        # but time expressions like "через 2 минуты" survive
         try:
-            date_results = search_dates(clean_text, languages=["ru", "en"], settings={
+            date_results = search_dates(text, languages=["ru", "en"], settings={
                 "TIMEZONE": tz_name,
                 "RETURN_AS_TIMEZONE_AWARE": True,
                 "PREFER_DATES_FROM": "future",
