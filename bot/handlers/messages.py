@@ -203,6 +203,7 @@ def setup_messages_router(
 
         # Otherwise treat as new task
         await message.answer("🔍 Понял, обрабатываю…")
+        logger.info("_process_text: before adapter.extract text=%r", text)
         adapter = ManualAdapter(llm_client, tz_name=config.timezone)
         tasks = await adapter.extract(text)
 
