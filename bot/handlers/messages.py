@@ -156,6 +156,10 @@ def setup_messages_router(
             effective_text = text or message.text or ""
             has_mention = f"@{_bot_username}" in effective_text
             has_keyword = "бот" in effective_text.lower()
+            # STT correction: "Вот" at start often means misrecognized "Бот"
+            if not has_keyword and effective_text.lower().startswith("вот"):
+                effective_text = "бот" + effective_text[3:]
+                has_keyword = True
             if not has_mention and not has_keyword:
                 return
             # Strip trigger words from the text we actually have
