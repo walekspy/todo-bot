@@ -12,6 +12,7 @@ def snooze_keyboard(task_id: str, config: Config = None) -> InlineKeyboardMarkup
     )
     builder.row(
         InlineKeyboardButton(text="Позже",        callback_data=f"snooze:later:{task_id}"),
+        InlineKeyboardButton(text="Завтра",       callback_data=f"snooze:tomorrow:{task_id}"),
         InlineKeyboardButton(text="✏️ Своё время", callback_data=f"snooze:custom:{task_id}"),
     )
     return builder.as_markup()

@@ -221,24 +221,14 @@ def setup_callbacks_router(
         elif option == "1h":
             until = now_local + timedelta(hours=1)
         elif option == "later":
-            task = await task_repo.get(task_id)
-            if task is None:
-                await callback.answer("Задача не найдена.")
-                return
-            priority = task.priority.value if task else "medium"
-            if priority == "high":
-                until = now_local + timedelta(hours=3)
-                until, shifted = _skip_night(until)
-                if shifted:
-                    local_str = f"{until.strftime('%d.%m')} в {until.strftime('%H:%M')}"
-                    warning = f"⚠️ Задача с высоким приоритетом переносится на ночное время! Напомню в {local_str}"
-            elif priority == "low":
-                until = now_local + timedelta(hours=24)
-                until, _ = _skip_night(until)
-            else:  # medium
-                until = (now_local + timedelta(days=1)).replace(
-                    hour=config.snooze_morning_hour, minute=0, second=0, microsecond=0
-                )
+            evening = now_local.replace(hour=22, minute=0, second=0, microsecond=0)
+            if now_local >= evening:
+                evening += timedelta(days=1)
+            until = evening
+        elif option == "tomorrow":
+            until = (now_local + timedelta(days=1)).replace(
+                hour=config.snooze_morning_hour, minute=0, second=0, microsecond=0
+            )
         elif option == "custom":
             await state.set_state(CustomSnoozeStates.waiting_for_time)
             await state.update_data(task_id=task_id)

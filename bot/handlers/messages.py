@@ -1,3 +1,4 @@
+import re
 import uuid
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -166,8 +167,8 @@ def setup_messages_router(
             if has_mention:
                 text = effective_text.replace(f"@{_bot_username}", "").strip()
             else:
-                # Remove "бот" from anywhere in text (beginning, middle, end)
-                text = effective_text.lower().replace("бот", "").strip()
+                # Remove "бот" as a whole word (word-boundary match, avoids matching inside words like "ботинки")
+                text = re.sub(r'\bбот\b', '', effective_text.lower()).strip()
         else:
             # Preserve whisper transcription if passed, otherwise use message.text
             text = text or message.text or ""
