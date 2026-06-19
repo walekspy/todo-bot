@@ -193,7 +193,6 @@ def setup_messages_router(
             return
 
         # Extract assignee @mention from text (any @word that isn't the bot)
-        import re
         assignee_username: Optional[str] = None
         mention_pattern = re.compile(r"@(\w+)")
         for match in mention_pattern.finditer(text):
