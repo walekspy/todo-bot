@@ -166,7 +166,11 @@ async def extract_tasks(
         logger.info("extract_tasks: stripped imperative: %r -> %r", text, clean_text)
     try:
         raw_json = await client.complete(EXTRACT_SYSTEM_PROMPT, clean_text)
-        logger.info("extract_tasks: LLM raw response: %r", raw_json[:500])
+        if raw_json is None:
+            logger.warning("extract_tasks: LLM returned None (timeout/empty), falling back to dateparser")
+            raw_json = "[]"
+        else:
+            logger.info("extract_tasks: LLM raw response: %r", raw_json[:500])
     except Exception as e:
         logger.error("extract_tasks: LLM error: %s", e)
         raise
