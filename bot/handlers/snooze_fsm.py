@@ -1,5 +1,6 @@
 """FSM handler for custom snooze time input."""
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import dateparser
 from aiogram import Router
@@ -10,6 +11,10 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram import Bot
 from bot.config import Config
 from bot.db.repository import TaskRepo
+
+# Fast path for bare HH:MM time inputs
+_HHMM_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
+_DDMM_HHMM_RE = re.compile(r"^(\d{1,2})\.(\d{1,2})(?:\s+(\d{1,2})(?::(\d{2}))?)?$")
 
 
 class CustomSnoozeStates(StatesGroup):
@@ -47,16 +52,36 @@ def setup_snooze_fsm_router(
         tz = ZoneInfo(config.timezone)
         now = datetime.now(tz)
 
-        until = dateparser.parse(
-            message.text or "",
-            languages=["ru", "en"],
-            settings={
-                "TIMEZONE": config.timezone,
-                "RETURN_AS_TIMEZONE_AWARE": True,
-                "PREFER_DATES_FROM": "future",
-                "RELATIVE_BASE": now,
-            },
-        )
+        # Normalize input: collapse spaces around colon, strip
+        raw_text = message.text or ""
+        cleaned = re.sub(r"\s*:\s*", ":", raw_text.strip())
+        # Fast path: bare HH:MM — dateparser is unreliable for this
+        m = _HHMM_RE.match(cleaned)
+        if m:
+            h, minute = int(m.group(1)), int(m.group(2))
+            until = now.replace(hour=h, minute=minute, second=0, microsecond=0)
+            if until <= now:
+                until += timedelta(days=1)
+        # Fast path: DD.MM [HH:MM]
+        elif (m := _DDMM_HHMM_RE.match(cleaned)):
+            day, month = int(m.group(1)), int(m.group(2))
+            hour = int(m.group(3)) if m.group(3) else 9
+            minute = int(m.group(4)) if m.group(4) else 0
+            year = now.year
+            until = datetime(year, month, day, hour, minute, tzinfo=tz)
+            if until <= now:
+                until = datetime(year + 1, month, day, hour, minute, tzinfo=tz)
+        else:
+            until = dateparser.parse(
+                cleaned,
+                languages=["ru", "en"],
+                settings={
+                    "TIMEZONE": config.timezone,
+                    "RETURN_AS_TIMEZONE_AWARE": True,
+                    "PREFER_DATES_FROM": "future",
+                    "RELATIVE_BASE": now,
+                },
+            )
 
         if until is None:
             await message.answer(

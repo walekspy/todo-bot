@@ -47,8 +47,9 @@ Return ONLY the JSON array. No explanation, no chat, no "Готово"."""
 
 
 _LEADING_PREPS = ("в ", "на ", "во ", "к ", "до ")
-_TIME_RE = re.compile(r'\b(\d{1,2}:\d{2})\b')
+_TIME_RE = re.compile(r'\b(\d{1,2}\s*:\s*\d{2})\b')
 _HHMM_RE = re.compile(r'^(\d{1,2}):(\d{2})$')
+_DDMM_HHMM_RE = re.compile(r'^(\d{1,2})\.(\d{1,2})(?:\s+(\d{1,2})(?::(\d{2}))?)?$')
 
 # Imperative patterns that confuse the LLM into acting like an assistant
 _IMPERATIVE_RE = re.compile(
@@ -99,16 +100,33 @@ def _normalize_time_expr(expr: str) -> str:
 def _parse_time(expr: str, tz_name: str) -> Optional[datetime]:
     """Parse a natural-language time expression using dateparser."""
     expr = _strip_preposition(expr.strip())
+    # Normalize spaces around colon: "13 : 30" → "13:30"
+    expr = re.sub(r"\s*:\s*", ":", expr)
     tz = ZoneInfo(tz_name)
     now = datetime.now(tz)
 
-    # Fast path: bare HH:MM \u2014 dateparser is unreliable for this case
+    # Fast path: bare HH:MM — dateparser is unreliable for this case
     m = _HHMM_RE.match(expr)
     if m:
         h, minute = int(m.group(1)), int(m.group(2))
         candidate = now.replace(hour=h, minute=minute, second=0, microsecond=0)
         if candidate <= now:
             candidate += timedelta(days=1)
+        return candidate
+
+    # Fast path: DD.MM [HH:MM] — dateparser fails on dot-separated dates
+    m = _DDMM_HHMM_RE.match(expr)
+    if m:
+        day, month = int(m.group(1)), int(m.group(2))
+        hour = int(m.group(3)) if m.group(3) else 9
+        minute = int(m.group(4)) if m.group(4) else 0
+        year = now.year
+        candidate = datetime(year, month, day, hour, minute,
+                             tzinfo=ZoneInfo(tz_name))
+        # If date has passed this year, try next year (common for annual reminders)
+        if candidate <= now:
+            candidate = datetime(year + 1, month, day, hour, minute,
+                                 tzinfo=ZoneInfo(tz_name))
         return candidate
 
     # Normalize bare hours before sending to dateparser
