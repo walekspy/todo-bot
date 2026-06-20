@@ -84,9 +84,13 @@ def setup_callbacks_router(
                 "config": config,
             },
         )
-        await callback.message.edit_text(
-            f"✅ Задача сохранена: <b>{task.title}</b>", parse_mode="HTML"
-        )
+        confirm_text = f"✅ Задача сохранена: <b>{task.title}</b>"
+        if task.remind_at:
+            local_dt = task.remind_at.astimezone(ZoneInfo(config.timezone))
+            confirm_text += f"\n📅 {local_dt.strftime('%d.%m.%Y %H:%M')}"
+        if task.recurrence:
+            confirm_text += "\n🔄 Повторяется"
+        await callback.message.edit_text(confirm_text, parse_mode="HTML")
         # In group chats without explicit assignee — suggest who to assign
         is_group = callback.message.chat.type in ("group", "supergroup")
         if is_group and not task.assignee_username and member_repo:
