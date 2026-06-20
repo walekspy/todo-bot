@@ -189,6 +189,26 @@ def setup_callbacks_router(
         await callback.message.edit_text(text, parse_mode="HTML")
         await callback.answer("Отмечено как выполненное!")
 
+    @router.callback_query(F.data.startswith("remind:cancel:"))
+    async def on_remind_cancel(callback: CallbackQuery) -> None:
+        task_id = callback.data.split(":", 2)[2]
+        task = await task_repo.get(task_id)
+        if task is None:
+            await callback.answer("Задача не найдена.")
+            return
+        if not await _check_assignee(callback, task):
+            return
+        await task_repo.update_status(task_id, TaskStatus.CANCELLED)
+        name = callback.from_user.username or callback.from_user.first_name
+        extra = ""
+        if task.recurrence:
+            extra = "\n🛑 Серия остановлена"
+        text = f"❌ Отменено: <b>{task.title}</b>{extra}"
+        if callback.message.chat.type != "private":
+            text += f" — @{name}"
+        await callback.message.edit_text(text, parse_mode="HTML")
+        await callback.answer("Задача отменена")
+
     @router.callback_query(F.data.startswith("remind:take:"))
     async def on_remind_take(callback: CallbackQuery) -> None:
         task_id = callback.data.split(":", 2)[2]
