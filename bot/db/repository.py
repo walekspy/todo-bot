@@ -132,6 +132,15 @@ class TaskRepo:
         )
         await self.conn.commit()
 
+    async def reschedule(self, task_id: str, next_remind_at: datetime) -> None:
+        """Update remind_at for a recurring task (keeps status pending)."""
+        await self.conn.execute(
+            "UPDATE tasks SET remind_at = ?, snoozed_until = NULL,"
+            " status = 'pending', updated_at = ? WHERE id = ?",
+            (_fmt_dt(next_remind_at), _fmt_dt(datetime.now(timezone.utc)), task_id),
+        )
+        await self.conn.commit()
+
     async def get_by_google_id(self, google_task_id: str) -> Optional[Task]:
         async with self.conn.execute(
             "SELECT * FROM tasks WHERE google_task_id = ?", (google_task_id,)

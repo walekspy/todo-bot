@@ -1,5 +1,7 @@
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
+from croniter import croniter
+import logging
 from aiogram import Router, F, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
@@ -10,6 +12,8 @@ from bot.db.repository import TaskRepo, ChatMemberRepo, ChatSettingsRepo
 from bot.keyboards.snooze import snooze_keyboard
 from bot.keyboards.reminder import reminder_keyboard
 from bot.handlers.snooze_fsm import CustomSnoozeStates, WatchStates
+
+logger = logging.getLogger(__name__)
 
 
 def setup_callbacks_router(
@@ -132,6 +136,47 @@ def setup_callbacks_router(
             return
         if not await _check_assignee(callback, task):
             return
+
+        # ── Recurring task: reschedule instead of closing ──
+        if task.recurrence:
+            try:
+                tz = ZoneInfo(config.timezone)
+                now = datetime.now(tz)
+                base = task.remind_at.astimezone(tz) if task.remind_at else now
+                cron = croniter(task.recurrence, base)
+                next_dt = cron.get_next(datetime)
+                # If next_dt is in the past (edge case: cron pattern matched
+                # "now" again), advance until future
+                while next_dt <= now:
+                    next_dt = cron.get_next(datetime)
+                next_utc = next_dt.astimezone(timezone.utc)
+                await task_repo.reschedule(task_id, next_utc)
+                from bot.scheduler.jobs import task_reminder_job
+                scheduler.add_job(
+                    task_reminder_job,
+                    trigger="date",
+                    run_date=next_utc,
+                    id=f"reminder_{task.id}",
+                    replace_existing=True,
+                    kwargs={
+                        "task_id": task.id,
+                        "bot": bot,
+                        "task_repo": task_repo,
+                        "config": config,
+                    },
+                )
+                local_str = next_dt.strftime("%d.%m.%Y %H:%M")
+                text = f"✅ Выполнено: <b>{task.title}</b>\n🔄 Следующее: {local_str}"
+                if callback.message.chat.type != "private":
+                    name = callback.from_user.username or callback.from_user.first_name
+                    text += f" — @{name}"
+                await callback.message.edit_text(text, parse_mode="HTML")
+                await callback.answer("Следующее запланировано!")
+                return
+            except Exception as e:
+                logger.error("reschedule failed for %s: %s", task_id, e)
+                # Fall through to normal DONE — don't lose the task
+        # ── Non-recurring: mark done ──
         await task_repo.update_status(task_id, TaskStatus.DONE)
         name = callback.from_user.username or callback.from_user.first_name
         text = f"✅ Выполнено: <b>{task.title}</b>"
