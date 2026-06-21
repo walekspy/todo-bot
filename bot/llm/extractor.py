@@ -211,6 +211,12 @@ async def extract_tasks(
             if date_results:
                 time_str, parsed_time = date_results[0]
                 title = clean_text.replace(time_str, "").strip()
+                # Also strip bare HH:MM from title so it doesn't duplicate
+                tm = _TIME_RE.search(title)
+                if tm:
+                    title = title.replace(tm.group(0), "").strip()
+                # Clean trailing prepositions left after time removal
+                title = re.sub(r'\s+(на|в|во|к|до)$', '', title)
                 time_expr = time_str
                 logger.info("extract_tasks: dateparser found time %r -> %s", time_str, parsed_time)
         except Exception as de:
@@ -230,7 +236,13 @@ async def extract_tasks(
     for item in items:
         try:
             time_expr = item.get("time_expression")
-            # Fallback: LLM missed the time but raw text has HH:MM
+            # If time_expr has a date but no HH:MM, try to find it in the text
+            if time_expr and not _TIME_RE.search(time_expr):
+                m = _TIME_RE.search(text)
+                if m:
+                    time_expr = time_expr + " " + m.group(1)
+                    logger.debug("time_expression enriched with time: %r", time_expr)
+            # Fallback: no time_expr at all — try to find HH:MM in text
             if not time_expr:
                 m = _TIME_RE.search(text)  # search original text (may have time hints)
                 if m:
