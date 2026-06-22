@@ -45,8 +45,9 @@ async def task_reminder_job(
                 },
             )
         return
-    # Recurring task whose remind_at is in the past: advance to next occurrence
-    if task.recurrence and task.remind_at and task.remind_at < now:
+    # Recurring task whose remind_at is significantly in the past
+    # (e.g. after a long restart). Allow ±5 min grace for normal scheduling jitter.
+    if task.recurrence and task.remind_at and task.remind_at < now - timedelta(minutes=5):
         from croniter import croniter
         from zoneinfo import ZoneInfo
         tz = ZoneInfo(config.timezone)
