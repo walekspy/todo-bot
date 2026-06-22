@@ -108,6 +108,24 @@ async def main() -> None:
                 },
             )
 
+        # Daily summary of completed tasks (hour configurable via DAILY_SUMMARY_HOUR)
+        from bot.scheduler.jobs import daily_summary_job
+        from zoneinfo import ZoneInfo
+        scheduler.add_job(
+            daily_summary_job,
+            trigger="cron",
+            hour=config.daily_summary_hour,
+            minute=0,
+            timezone=ZoneInfo(config.timezone),
+            id="daily_summary",
+            replace_existing=True,
+            kwargs={
+                "bot": bot,
+                "task_repo": task_repo,
+                "config": config,
+            },
+        )
+
         # Daily backup at 03:00 UTC
         if config.backup_chat_id:
             from bot.scheduler.jobs import backup_job

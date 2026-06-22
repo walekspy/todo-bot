@@ -202,6 +202,25 @@ class TaskRepo:
         ) as cursor:
             return [_row_to_task(r) for r in await cursor.fetchall()]
 
+    async def list_done_between(self, chat_id: int, start_utc: datetime, end_utc: datetime) -> list[Task]:
+        """Tasks marked DONE in [start_utc, end_utc) for a specific chat."""
+        async with self.conn.execute(
+            "SELECT * FROM tasks WHERE chat_id = ? AND status = 'done'"
+            " AND updated_at >= ? AND updated_at < ?"
+            " ORDER BY updated_at",
+            (chat_id, _fmt_dt(start_utc), _fmt_dt(end_utc)),
+        ) as cursor:
+            return [_row_to_task(r) for r in await cursor.fetchall()]
+
+    async def list_chats_with_done(self, start_utc: datetime, end_utc: datetime) -> list[int]:
+        """Distinct chat_ids that have at least one DONE task in the time window."""
+        async with self.conn.execute(
+            "SELECT DISTINCT chat_id FROM tasks WHERE status = 'done'"
+            " AND updated_at >= ? AND updated_at < ?",
+            (_fmt_dt(start_utc), _fmt_dt(end_utc)),
+        ) as cursor:
+            return [r[0] for r in await cursor.fetchall()]
+
 
 class WatchedSourceRepo:
     def __init__(self, conn: aiosqlite.Connection):

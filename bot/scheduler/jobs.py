@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from typing import Optional
 from aiogram import Bot
 from bot.config import Config
@@ -193,6 +194,44 @@ async def _send_report(bot, chat_id, events, now):
             + "\n".join(lines)
         )
         await bot.send_message(chat_id, text, parse_mode="HTML")
+
+
+async def daily_summary_job(
+    bot: Bot,
+    task_repo: TaskRepo,
+    config: Config,
+) -> None:
+    """Send a daily summary of completed tasks to each chat."""
+    tz = ZoneInfo(config.timezone)
+    now_local = datetime.now(tz)
+    today_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_end = today_start + timedelta(days=1)
+    start_utc = today_start.astimezone(timezone.utc)
+    end_utc = today_end.astimezone(timezone.utc)
+    date_str = today_start.strftime("%d.%m.%Y")
+
+    chat_ids = await task_repo.list_chats_with_done(start_utc, end_utc)
+    if not chat_ids:
+        logger.info("daily_summary: no completed tasks for %s", date_str)
+        return
+
+    for chat_id in chat_ids:
+        tasks = await task_repo.list_done_between(chat_id, start_utc, end_utc)
+        if not tasks:
+            continue
+
+        lines = [f"📊 <b>Итоги дня — {date_str}</b>\n"]
+        lines.append(f"✅ Выполнено задач: <b>{len(tasks)}</b>\n")
+        for t in tasks:
+            line = f"• {t.title}"
+            if t.assignee_username:
+                line += f" — @{t.assignee_username}"
+            lines.append(line)
+
+        try:
+            await bot.send_message(chat_id, "\n".join(lines), parse_mode="HTML")
+        except Exception as e:
+            logger.warning("daily_summary: failed to send to chat %s: %s", chat_id, e)
 
 
 async def backup_job(db_path: str, backup_chat_id: int, bot: Bot) -> None:
