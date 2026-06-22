@@ -45,6 +45,33 @@ async def task_reminder_job(
                 },
             )
         return
+    # Recurring task whose remind_at is in the past: advance to next occurrence
+    if task.recurrence and task.remind_at and task.remind_at < now:
+        from croniter import croniter
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(config.timezone)
+        base = task.remind_at.astimezone(tz)
+        cron = croniter(task.recurrence, base)
+        next_dt = cron.get_next(datetime)
+        while next_dt <= datetime.now(tz):
+            next_dt = cron.get_next(datetime)
+        next_utc = next_dt.astimezone(timezone.utc)
+        await task_repo.reschedule(task_id, next_utc)
+        if scheduler:
+            scheduler.add_job(
+                task_reminder_job,
+                trigger="date",
+                run_date=next_utc,
+                id=f"reminder_{task_id}",
+                replace_existing=True,
+                kwargs={
+                    "task_id": task_id, "bot": bot,
+                    "task_repo": task_repo, "config": config,
+                    "scheduler": scheduler,
+                },
+            )
+        logger.info("task_reminder_job: advanced past-due recurring %s to %s", task_id, next_dt)
+        return
     await send_task_reminder(bot, task, config)
     # Auto re-remind in 30 minutes if no action is taken
     if scheduler:
