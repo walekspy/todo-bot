@@ -82,6 +82,7 @@ def setup_callbacks_router(
                 "bot": bot,
                 "task_repo": task_repo,
                 "config": config,
+                "scheduler": scheduler,
             },
         )
         confirm_text = f"✅ Задача сохранена: <b>{task.title}</b>"
@@ -167,6 +168,7 @@ def setup_callbacks_router(
                         "bot": bot,
                         "task_repo": task_repo,
                         "config": config,
+                        "scheduler": scheduler,
                     },
                 )
                 local_str = next_dt.strftime("%d.%m.%Y %H:%M")
@@ -208,36 +210,6 @@ def setup_callbacks_router(
             text += f" — @{name}"
         await callback.message.edit_text(text, parse_mode="HTML")
         await callback.answer("Задача отменена")
-
-    @router.callback_query(F.data.startswith("remind:take:"))
-    async def on_remind_take(callback: CallbackQuery) -> None:
-        task_id = callback.data.split(":", 2)[2]
-        task = await task_repo.get(task_id)
-        if task is None:
-            await callback.answer("Задача не найдена.")
-            return
-        if not await _check_assignee(callback, task):
-            return
-        await task_repo.update_status(task_id, TaskStatus.ACTIVE)
-        from bot.scheduler.jobs import checkin_job
-        scheduler.add_job(
-            checkin_job,
-            trigger="date",
-            run_date=datetime.now(timezone.utc) + timedelta(minutes=30),
-            id=f"checkin_{task_id}",
-            replace_existing=True,
-            kwargs={
-                "task_id": task_id,
-                "bot": bot,
-                "task_repo": task_repo,
-                "config": config,
-            },
-        )
-        await callback.message.edit_text(
-            f"▶️ Взято в работу: <b>{task.title}</b>\nПроверю через 30 минут.",
-            parse_mode="HTML",
-        )
-        await callback.answer()
 
     @router.callback_query(F.data.startswith("remind:snooze:"))
     async def on_remind_snooze(callback: CallbackQuery) -> None:
@@ -328,6 +300,7 @@ def setup_callbacks_router(
                 "bot": bot,
                 "task_repo": task_repo,
                 "config": config,
+                "scheduler": scheduler,
             },
         )
         task = await task_repo.get(task_id)

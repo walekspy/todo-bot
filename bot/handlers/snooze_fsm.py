@@ -109,6 +109,7 @@ def setup_snooze_fsm_router(
                 "bot": bot,
                 "task_repo": task_repo,
                 "config": config,
+                "scheduler": scheduler,
             },
         )
 

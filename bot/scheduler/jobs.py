@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 from aiogram import Bot
 from bot.config import Config
@@ -18,17 +18,47 @@ async def task_reminder_job(
     bot: Bot,
     task_repo: TaskRepo,
     config: Config,
+    scheduler: "AsyncIOScheduler" = None,
 ) -> None:
     task = await task_repo.get(task_id)
     if task is None:
         logger.warning("task_reminder_job: task %s not found", task_id)
         return
-    if task.status in (TaskStatus.DONE, TaskStatus.CANCELLED, TaskStatus.ACTIVE):
+    # Only stop if the task is terminated (done or cancelled).
+    if task.status in (TaskStatus.DONE, TaskStatus.CANCELLED):
         return
     now = datetime.now(timezone.utc)
     if task.snoozed_until and task.snoozed_until > now:
+        # Snoozed - reschedule to fire at snooze expiry
+        if scheduler:
+            scheduler.add_job(
+                task_reminder_job,
+                trigger="date",
+                run_date=task.snoozed_until,
+                id=f"reminder_{task_id}",
+                replace_existing=True,
+                kwargs={
+                    "task_id": task_id, "bot": bot,
+                    "task_repo": task_repo, "config": config,
+                    "scheduler": scheduler,
+                },
+            )
         return
     await send_task_reminder(bot, task, config)
+    # Auto re-remind in 30 minutes if no action is taken
+    if scheduler:
+        scheduler.add_job(
+            task_reminder_job,
+            trigger="date",
+            run_date=now + timedelta(minutes=30),
+            id=f"reminder_{task_id}",
+            replace_existing=True,
+            kwargs={
+                "task_id": task_id, "bot": bot,
+                "task_repo": task_repo, "config": config,
+                "scheduler": scheduler,
+            },
+        )
 
 
 async def _resolve_alert_chat(settings_repo: Optional[ChatSettingsRepo], source_chat_id: int) -> int:
@@ -163,23 +193,6 @@ async def _send_report(bot, chat_id, events, now):
             + "\n".join(lines)
         )
         await bot.send_message(chat_id, text, parse_mode="HTML")
-
-
-async def checkin_job(
-    task_id: str,
-    bot: Bot,
-    task_repo: TaskRepo,
-    config: Config,
-) -> None:
-    """30-minute follow-up after 'take in work': reset to PENDING and remind again."""
-    task = await task_repo.get(task_id)
-    if task is None:
-        return
-    if task.status == TaskStatus.DONE:
-        return  # user already marked done, skip
-    # Reset to pending so the reminder fires normally
-    await task_repo.update_status(task_id, TaskStatus.PENDING)
-    await send_task_reminder(bot, task, config)
 
 
 async def backup_job(db_path: str, backup_chat_id: int, bot: Bot) -> None:

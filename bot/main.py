@@ -84,6 +84,7 @@ async def main() -> None:
                     "bot": bot,
                     "task_repo": task_repo,
                     "config": config,
+                    "scheduler": scheduler,
                 },
             )
 
