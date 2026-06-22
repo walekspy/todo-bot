@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 OLLAMA_BASE_URL = "http://localhost:11434/v1"
 HERMES_BASE_URL = "http://127.0.0.1:8642/v1"
+OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
 
 # Default models per provider
 DEFAULT_MODELS = {
@@ -25,6 +26,7 @@ DEFAULT_MODELS = {
     "anthropic": "claude-haiku-4-5-20251001",
     "ollama": "llama3",
     "hermes": "hermes-agent",
+    "opencode-go": "kimi-k2.6",
 }
 
 
@@ -52,12 +54,13 @@ class LLMClient:
     async def _complete_hermes(self, system: str, user: str) -> str:
         import openai
         client = openai.AsyncOpenAI(api_key=self.api_key, base_url=HERMES_BASE_URL)
+        # Hermes API doesn't support system role, merge into user message
+        combined_prompt = f"{system}\n\n{user}"
         response = await client.chat.completions.create(
             model=self.model,
             max_tokens=2048,
             messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
+                {"role": "user", "content": combined_prompt},
             ],
         )
         return response.choices[0].message.content
@@ -76,12 +79,13 @@ class LLMClient:
     async def _complete_openai_compat(self, system: str, user: str, fallback: bool = False) -> str:
         import openai
         if fallback:
-            client = openai.AsyncOpenAI(api_key=self.fallback_key or self.api_key, base_url=GROQ_BASE_URL)
-            model = "llama-3.3-70b-versatile"
+            client = openai.AsyncOpenAI(api_key=self.fallback_key or self.api_key, base_url=OPENCODE_GO_BASE_URL)
+            model = "kimi-k2.6"
         else:
             base_urls = {
                 "groq": GROQ_BASE_URL,
                 "ollama": OLLAMA_BASE_URL,
+                "opencode-go": OPENCODE_GO_BASE_URL,
             }
             client = openai.AsyncOpenAI(
                 api_key=self.api_key,

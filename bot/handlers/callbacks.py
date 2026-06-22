@@ -1,5 +1,7 @@
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
+from croniter import croniter
+import logging
 from aiogram import Router, F, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
@@ -10,6 +12,8 @@ from bot.db.repository import TaskRepo, ChatMemberRepo, ChatSettingsRepo
 from bot.keyboards.snooze import snooze_keyboard
 from bot.keyboards.reminder import reminder_keyboard
 from bot.handlers.snooze_fsm import CustomSnoozeStates, WatchStates
+
+logger = logging.getLogger(__name__)
 
 
 def setup_callbacks_router(
@@ -78,11 +82,16 @@ def setup_callbacks_router(
                 "bot": bot,
                 "task_repo": task_repo,
                 "config": config,
+                "scheduler": scheduler,
             },
         )
-        await callback.message.edit_text(
-            f"✅ Задача сохранена: <b>{task.title}</b>", parse_mode="HTML"
-        )
+        confirm_text = f"✅ Задача сохранена: <b>{task.title}</b>"
+        if task.remind_at:
+            local_dt = task.remind_at.astimezone(ZoneInfo(config.timezone))
+            confirm_text += f"\n📅 {local_dt.strftime('%d.%m.%Y %H:%M')}"
+        if task.recurrence:
+            confirm_text += "\n🔄 Повторяется"
+        await callback.message.edit_text(confirm_text, parse_mode="HTML")
         # In group chats without explicit assignee — suggest who to assign
         is_group = callback.message.chat.type in ("group", "supergroup")
         if is_group and not task.assignee_username and member_repo:
@@ -132,6 +141,48 @@ def setup_callbacks_router(
             return
         if not await _check_assignee(callback, task):
             return
+
+        # ── Recurring task: reschedule instead of closing ──
+        if task.recurrence:
+            try:
+                tz = ZoneInfo(config.timezone)
+                now = datetime.now(tz)
+                base = task.remind_at.astimezone(tz) if task.remind_at else now
+                cron = croniter(task.recurrence, base)
+                next_dt = cron.get_next(datetime)
+                # If next_dt is in the past (edge case: cron pattern matched
+                # "now" again), advance until future
+                while next_dt <= now:
+                    next_dt = cron.get_next(datetime)
+                next_utc = next_dt.astimezone(timezone.utc)
+                await task_repo.reschedule(task_id, next_utc)
+                from bot.scheduler.jobs import task_reminder_job
+                scheduler.add_job(
+                    task_reminder_job,
+                    trigger="date",
+                    run_date=next_utc,
+                    id=f"reminder_{task.id}",
+                    replace_existing=True,
+                    kwargs={
+                        "task_id": task.id,
+                        "bot": bot,
+                        "task_repo": task_repo,
+                        "config": config,
+                        "scheduler": scheduler,
+                    },
+                )
+                local_str = next_dt.strftime("%d.%m.%Y %H:%M")
+                text = f"✅ Выполнено: <b>{task.title}</b>\n🔄 Следующее: {local_str}"
+                if callback.message.chat.type != "private":
+                    name = callback.from_user.username or callback.from_user.first_name
+                    text += f" — @{name}"
+                await callback.message.edit_text(text, parse_mode="HTML")
+                await callback.answer("Следующее запланировано!")
+                return
+            except Exception as e:
+                logger.error("reschedule failed for %s: %s", task_id, e)
+                # Fall through to normal DONE — don't lose the task
+        # ── Non-recurring: mark done ──
         await task_repo.update_status(task_id, TaskStatus.DONE)
         name = callback.from_user.username or callback.from_user.first_name
         text = f"✅ Выполнено: <b>{task.title}</b>"
@@ -140,8 +191,8 @@ def setup_callbacks_router(
         await callback.message.edit_text(text, parse_mode="HTML")
         await callback.answer("Отмечено как выполненное!")
 
-    @router.callback_query(F.data.startswith("remind:take:"))
-    async def on_remind_take(callback: CallbackQuery) -> None:
+    @router.callback_query(F.data.startswith("remind:cancel:"))
+    async def on_remind_cancel(callback: CallbackQuery) -> None:
         task_id = callback.data.split(":", 2)[2]
         task = await task_repo.get(task_id)
         if task is None:
@@ -149,26 +200,16 @@ def setup_callbacks_router(
             return
         if not await _check_assignee(callback, task):
             return
-        await task_repo.update_status(task_id, TaskStatus.ACTIVE)
-        from bot.scheduler.jobs import checkin_job
-        scheduler.add_job(
-            checkin_job,
-            trigger="date",
-            run_date=datetime.now(timezone.utc) + timedelta(minutes=30),
-            id=f"checkin_{task_id}",
-            replace_existing=True,
-            kwargs={
-                "task_id": task_id,
-                "bot": bot,
-                "task_repo": task_repo,
-                "config": config,
-            },
-        )
-        await callback.message.edit_text(
-            f"▶️ Взято в работу: <b>{task.title}</b>\nПроверю через 30 минут.",
-            parse_mode="HTML",
-        )
-        await callback.answer()
+        await task_repo.update_status(task_id, TaskStatus.CANCELLED)
+        name = callback.from_user.username or callback.from_user.first_name
+        extra = ""
+        if task.recurrence:
+            extra = "\n🛑 Серия остановлена"
+        text = f"❌ Отменено: <b>{task.title}</b>{extra}"
+        if callback.message.chat.type != "private":
+            text += f" — @{name}"
+        await callback.message.edit_text(text, parse_mode="HTML")
+        await callback.answer("Задача отменена")
 
     @router.callback_query(F.data.startswith("remind:snooze:"))
     async def on_remind_snooze(callback: CallbackQuery) -> None:
@@ -221,24 +262,14 @@ def setup_callbacks_router(
         elif option == "1h":
             until = now_local + timedelta(hours=1)
         elif option == "later":
-            task = await task_repo.get(task_id)
-            if task is None:
-                await callback.answer("Задача не найдена.")
-                return
-            priority = task.priority.value if task else "medium"
-            if priority == "high":
-                until = now_local + timedelta(hours=3)
-                until, shifted = _skip_night(until)
-                if shifted:
-                    local_str = f"{until.strftime('%d.%m')} в {until.strftime('%H:%M')}"
-                    warning = f"⚠️ Задача с высоким приоритетом переносится на ночное время! Напомню в {local_str}"
-            elif priority == "low":
-                until = now_local + timedelta(hours=24)
-                until, _ = _skip_night(until)
-            else:  # medium
-                until = (now_local + timedelta(days=1)).replace(
-                    hour=config.snooze_morning_hour, minute=0, second=0, microsecond=0
-                )
+            evening = now_local.replace(hour=22, minute=0, second=0, microsecond=0)
+            if now_local >= evening:
+                evening += timedelta(days=1)
+            until = evening
+        elif option == "tomorrow":
+            until = (now_local + timedelta(days=1)).replace(
+                hour=config.snooze_morning_hour, minute=0, second=0, microsecond=0
+            )
         elif option == "custom":
             await state.set_state(CustomSnoozeStates.waiting_for_time)
             await state.update_data(task_id=task_id)
@@ -269,6 +300,7 @@ def setup_callbacks_router(
                 "bot": bot,
                 "task_repo": task_repo,
                 "config": config,
+                "scheduler": scheduler,
             },
         )
         task = await task_repo.get(task_id)

@@ -1,5 +1,6 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from typing import Optional
 from aiogram import Bot
 from bot.config import Config
@@ -18,17 +19,74 @@ async def task_reminder_job(
     bot: Bot,
     task_repo: TaskRepo,
     config: Config,
+    scheduler: "AsyncIOScheduler" = None,
 ) -> None:
     task = await task_repo.get(task_id)
     if task is None:
         logger.warning("task_reminder_job: task %s not found", task_id)
         return
-    if task.status in (TaskStatus.DONE, TaskStatus.CANCELLED, TaskStatus.ACTIVE):
+    # Only stop if the task is terminated (done or cancelled).
+    if task.status in (TaskStatus.DONE, TaskStatus.CANCELLED):
         return
     now = datetime.now(timezone.utc)
     if task.snoozed_until and task.snoozed_until > now:
+        # Snoozed - reschedule to fire at snooze expiry
+        if scheduler:
+            scheduler.add_job(
+                task_reminder_job,
+                trigger="date",
+                run_date=task.snoozed_until,
+                id=f"reminder_{task_id}",
+                replace_existing=True,
+                kwargs={
+                    "task_id": task_id, "bot": bot,
+                    "task_repo": task_repo, "config": config,
+                    "scheduler": scheduler,
+                },
+            )
+        return
+    # Recurring task whose remind_at is in the past: advance to next occurrence
+    if task.recurrence and task.remind_at and task.remind_at < now:
+        from croniter import croniter
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(config.timezone)
+        base = task.remind_at.astimezone(tz)
+        cron = croniter(task.recurrence, base)
+        next_dt = cron.get_next(datetime)
+        while next_dt <= datetime.now(tz):
+            next_dt = cron.get_next(datetime)
+        next_utc = next_dt.astimezone(timezone.utc)
+        await task_repo.reschedule(task_id, next_utc)
+        if scheduler:
+            scheduler.add_job(
+                task_reminder_job,
+                trigger="date",
+                run_date=next_utc,
+                id=f"reminder_{task_id}",
+                replace_existing=True,
+                kwargs={
+                    "task_id": task_id, "bot": bot,
+                    "task_repo": task_repo, "config": config,
+                    "scheduler": scheduler,
+                },
+            )
+        logger.info("task_reminder_job: advanced past-due recurring %s to %s", task_id, next_dt)
         return
     await send_task_reminder(bot, task, config)
+    # Auto re-remind in 30 minutes if no action is taken
+    if scheduler:
+        scheduler.add_job(
+            task_reminder_job,
+            trigger="date",
+            run_date=now + timedelta(minutes=30),
+            id=f"reminder_{task_id}",
+            replace_existing=True,
+            kwargs={
+                "task_id": task_id, "bot": bot,
+                "task_repo": task_repo, "config": config,
+                "scheduler": scheduler,
+            },
+        )
 
 
 async def _resolve_alert_chat(settings_repo: Optional[ChatSettingsRepo], source_chat_id: int) -> int:
@@ -165,21 +223,42 @@ async def _send_report(bot, chat_id, events, now):
         await bot.send_message(chat_id, text, parse_mode="HTML")
 
 
-async def checkin_job(
-    task_id: str,
+async def daily_summary_job(
     bot: Bot,
     task_repo: TaskRepo,
     config: Config,
 ) -> None:
-    """30-minute follow-up after 'take in work': reset to PENDING and remind again."""
-    task = await task_repo.get(task_id)
-    if task is None:
+    """Send a daily summary of completed tasks to each chat."""
+    tz = ZoneInfo(config.timezone)
+    now_local = datetime.now(tz)
+    today_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_end = today_start + timedelta(days=1)
+    start_utc = today_start.astimezone(timezone.utc)
+    end_utc = today_end.astimezone(timezone.utc)
+    date_str = today_start.strftime("%d.%m.%Y")
+
+    chat_ids = await task_repo.list_chats_with_done(start_utc, end_utc)
+    if not chat_ids:
+        logger.info("daily_summary: no completed tasks for %s", date_str)
         return
-    if task.status == TaskStatus.DONE:
-        return  # user already marked done, skip
-    # Reset to pending so the reminder fires normally
-    await task_repo.update_status(task_id, TaskStatus.PENDING)
-    await send_task_reminder(bot, task, config)
+
+    for chat_id in chat_ids:
+        tasks = await task_repo.list_done_between(chat_id, start_utc, end_utc)
+        if not tasks:
+            continue
+
+        lines = [f"📊 <b>Итоги дня — {date_str}</b>\n"]
+        lines.append(f"✅ Выполнено задач: <b>{len(tasks)}</b>\n")
+        for t in tasks:
+            line = f"• {t.title}"
+            if t.assignee_username:
+                line += f" — @{t.assignee_username}"
+            lines.append(line)
+
+        try:
+            await bot.send_message(chat_id, "\n".join(lines), parse_mode="HTML")
+        except Exception as e:
+            logger.warning("daily_summary: failed to send to chat %s: %s", chat_id, e)
 
 
 async def backup_job(db_path: str, backup_chat_id: int, bot: Bot) -> None:

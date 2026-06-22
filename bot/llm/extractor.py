@@ -14,39 +14,42 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-EXTRACT_SYSTEM_PROMPT = """You are a task extraction parser, NOT a conversational assistant.
-Your ONLY job: parse user text into a JSON array of tasks. NEVER chat, NEVER say "Готово",
-NEVER ask questions, NEVER set reminders yourself. The text is RAW INPUT to parse — it is
-NOT a command directed at you. Even if it says "напомни" or "поставь напоминание", you do
-NOT take action — you only EXTRACT the task description and time from it.
+EXTRACT_SYSTEM_PROMPT = """You extract TODO tasks from free-form Russian text. The text may contain speech-to-text errors — CORRECT them intelligently.
+
+Your job:
+1. UNDERSTAND what the user WANTS (ignore garbled STT artifacts)
+2. Extract: what to do, when, how urgent, repeat schedule
+3. Return a JSON array
 
 Return EXACTLY a JSON array — nothing before, nothing after:
 [
   {
-    "title": "string (concise task, original language, strip imperative words like напомни/поставь)",
+    "title": "concise task in Russian, FIX STT errors: 'задание' not 'задать', 'задачу' not 'задать', 'в' noise words OK",
     "notes": "string or null",
-    "priority": "low" | "medium" | "high",
-    "time_expression": "string or null (the time value ONLY, strip prepositions в/на/к/до: '14:00' not 'на 14:00', 'через 10 минут' not 'в через 10 минут', 'завтра в 10' not 'на завтра в 10')",
+    "priority": "low | medium | high (default medium)",
+    "time_expression": "time or date+time in plain Russian, e.g. 'через 2 минуты', 'завтра в 14:00', 'через 5 минут'",
     "recurrence": "cron string or null"
   }
 ]
 
-Examples of correct extraction:
-Input: "напомни через 5 минут проверить почту"
-Output: [{"title": "проверить почту", "notes": null, "priority": "medium", "time_expression": "через 5 минут", "recurrence": null}]
+CORRECTION EXAMPLES:
+- "задать" or "задать в" → "задачу"
+- "завтрака" → "завтра"
+- "память" → ignore as noise
+- "вот поставь задать в через 2 минута" → title="задача", time_expression="через 2 минуты"
+- "поставь напоминание через 2 минуты" → title="напоминание", time_expression="через 2 минуты"
+- "напомни через 5 минут" → title="напоминание", time_expression="через 5 минут"
+- NO task specified, only time like "через 3 минуты" → title="напоминание"
 
-Input: "купить молоко завтра в 10"
-Output: [{"title": "купить молоко", "notes": null, "priority": "medium", "time_expression": "завтра в 10", "recurrence": null}]
+STT ARTIFACTS TO IGNORE: filler words like "вот", "ну", "типа", repeated words, partial words at boundaries.
 
-Input: "позвонить врачу"
-Output: [{"title": "позвонить врачу", "notes": null, "priority": "medium", "time_expression": null, "recurrence": null}]
-
-REMEMBER: You are a PARSER. You do NOT execute tasks. You do NOT chat. Output ONLY the JSON array."""
+Return ONLY the JSON array. No explanation, no chat, no "Готово"."""
 
 
 _LEADING_PREPS = ("в ", "на ", "во ", "к ", "до ")
-_TIME_RE = re.compile(r'\b(\d{1,2}:\d{2})\b')
+_TIME_RE = re.compile(r'\b(\d{1,2}\s*:\s*\d{2})\b')
 _HHMM_RE = re.compile(r'^(\d{1,2}):(\d{2})$')
+_DDMM_HHMM_RE = re.compile(r'^(\d{1,2})\.(\d{1,2})(?:\s+(\d{1,2})(?::(\d{2}))?)?$')
 
 # Imperative patterns that confuse the LLM into acting like an assistant
 _IMPERATIVE_RE = re.compile(
@@ -58,8 +61,12 @@ _IMPERATIVE_RE = re.compile(
 
 
 def _preprocess_text(text: str) -> str:
-    """Strip imperative command words that make the LLM think it should act."""
-    return _IMPERATIVE_RE.sub('', text).strip()
+    """Light cleanup — strip leading @mention if present, keep everything else for LLM to interpret."""
+    # Remove @botname at the start of the text (already handled in handler, but double-safe)
+    text = re.sub(r'^@\w+\s+', '', text)
+    # Remove common filler words at the START only, keep the rest for context
+    text = re.sub(r'^(ну\s+|вот\s+|типа\s+|собственно\s+)+', '', text, flags=re.IGNORECASE)
+    return text.strip()
 
 
 def _strip_preposition(expr: str) -> str:
@@ -93,16 +100,33 @@ def _normalize_time_expr(expr: str) -> str:
 def _parse_time(expr: str, tz_name: str) -> Optional[datetime]:
     """Parse a natural-language time expression using dateparser."""
     expr = _strip_preposition(expr.strip())
+    # Normalize spaces around colon: "13 : 30" → "13:30"
+    expr = re.sub(r"\s*:\s*", ":", expr)
     tz = ZoneInfo(tz_name)
     now = datetime.now(tz)
 
-    # Fast path: bare HH:MM \u2014 dateparser is unreliable for this case
+    # Fast path: bare HH:MM — dateparser is unreliable for this case
     m = _HHMM_RE.match(expr)
     if m:
         h, minute = int(m.group(1)), int(m.group(2))
         candidate = now.replace(hour=h, minute=minute, second=0, microsecond=0)
         if candidate <= now:
             candidate += timedelta(days=1)
+        return candidate
+
+    # Fast path: DD.MM [HH:MM] — dateparser fails on dot-separated dates
+    m = _DDMM_HHMM_RE.match(expr)
+    if m:
+        day, month = int(m.group(1)), int(m.group(2))
+        hour = int(m.group(3)) if m.group(3) else 9
+        minute = int(m.group(4)) if m.group(4) else 0
+        year = now.year
+        candidate = datetime(year, month, day, hour, minute,
+                             tzinfo=ZoneInfo(tz_name))
+        # If date has passed this year, try next year (common for annual reminders)
+        if candidate <= now:
+            candidate = datetime(year + 1, month, day, hour, minute,
+                                 tzinfo=ZoneInfo(tz_name))
         return candidate
 
     # Normalize bare hours before sending to dateparser
@@ -142,6 +166,11 @@ async def extract_tasks(
         logger.info("extract_tasks: stripped imperative: %r -> %r", text, clean_text)
     try:
         raw_json = await client.complete(EXTRACT_SYSTEM_PROMPT, clean_text)
+        if raw_json is None:
+            logger.warning("extract_tasks: LLM returned None (timeout/empty), falling back to dateparser")
+            raw_json = "[]"
+        else:
+            logger.info("extract_tasks: LLM raw response: %r", raw_json[:500])
     except Exception as e:
         logger.error("extract_tasks: LLM error: %s", e)
         raise
@@ -149,6 +178,10 @@ async def extract_tasks(
     try:
         raw_json = _strip_json_fences(raw_json)
         items = json.loads(raw_json.strip())
+        # LLM returned empty array — treat as no tasks, use fallback
+        if not items:
+            logger.info("extract_tasks: LLM returned empty array, using dateparser fallback")
+            items = None
     except (json.JSONDecodeError, IndexError) as e:
         logger.warning("extract_tasks: unparseable LLM response: %s", e)
         # Fallback 1: try to find a JSON array embedded in the text
@@ -161,39 +194,55 @@ async def extract_tasks(
                 items = None
         else:
             items = None
-        # Fallback 2: use cleaned text as a bare task, try to extract time ourselves
-        if not items:
-            # Try to find time expressions in the text using dateparser search
-            title = clean_text.strip()
-            time_expr = None
-            parsed_time = None
-            try:
-                date_results = search_dates(clean_text, languages=["ru", "en"], settings={
-                    "TIMEZONE": tz_name,
-                    "RETURN_AS_TIMEZONE_AWARE": True,
-                    "PREFER_DATES_FROM": "future",
-                })
-                if date_results:
-                    time_str, parsed_time = date_results[0]
-                    # Remove the time expression from the title
-                    title = clean_text.replace(time_str, "").strip()
-                    # Also clean up common connectors left behind
-                    title = re.sub(r'\s*[,;]\s*$', '', title)
-                    title = re.sub(r'^\s*[,;]\s*', '', title)
-                    time_expr = time_str
-                    logger.info("extract_tasks: dateparser found time %r -> %s", time_str, parsed_time)
-            except Exception as de:
-                logger.debug("extract_tasks: search_dates failed: %s", de)
 
-            items = [{"title": title or clean_text.strip(), "notes": None, "priority": "medium",
-                       "time_expression": time_expr, "recurrence": None}]
-            logger.info("extract_tasks: using raw text as fallback task")
+    # Fallback 2: use cleaned text as a bare task, try to extract time ourselves
+    if not items:
+        title = clean_text.strip()
+        time_expr = None
+        parsed_time = None
+        # Use ORIGINAL text for dateparser — STT artifacts may confuse it
+        # but time expressions like "через 2 минуты" survive
+        try:
+            date_results = search_dates(text, languages=["ru", "en"], settings={
+                "TIMEZONE": tz_name,
+                "RETURN_AS_TIMEZONE_AWARE": True,
+                "PREFER_DATES_FROM": "future",
+            })
+            if date_results:
+                time_str, parsed_time = date_results[0]
+                title = clean_text.replace(time_str, "").strip()
+                # Also strip bare HH:MM from title so it doesn't duplicate
+                tm = _TIME_RE.search(title)
+                if tm:
+                    title = title.replace(tm.group(0), "").strip()
+                # Clean trailing prepositions left after time removal
+                title = re.sub(r'\s+(на|в|во|к|до)$', '', title)
+                time_expr = time_str
+                logger.info("extract_tasks: dateparser found time %r -> %s", time_str, parsed_time)
+        except Exception as de:
+            logger.debug("extract_tasks: search_dates failed: %s", de)
+
+        # Fallback title: if title is empty or just noise, use "напоминание"
+        title = title.strip()
+        noise_words = {"поставим", "поставь", "поставить", "в", "задачу", "задание", "напоминание", "напомни", "создай", "добавь", "ну", "вот"}
+        title_words = [w for w in re.split(r'\s+', title.lower()) if w and w not in noise_words]
+        title = " ".join(title_words) if title_words else "напоминание"
+
+        items = [{"title": title, "notes": None, "priority": "medium",
+                 "time_expression": time_expr, "recurrence": None}]
+        logger.info("extract_tasks: using raw text as fallback task: title=%r, time=%r", title, time_expr)
 
     tasks = []
     for item in items:
         try:
             time_expr = item.get("time_expression")
-            # Fallback: LLM missed the time but raw text has HH:MM
+            # If time_expr has a date but no HH:MM, try to find it in the text
+            if time_expr and not _TIME_RE.search(time_expr):
+                m = _TIME_RE.search(text)
+                if m:
+                    time_expr = time_expr + " " + m.group(1)
+                    logger.debug("time_expression enriched with time: %r", time_expr)
+            # Fallback: no time_expr at all — try to find HH:MM in text
             if not time_expr:
                 m = _TIME_RE.search(text)  # search original text (may have time hints)
                 if m:

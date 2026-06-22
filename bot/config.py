@@ -20,6 +20,7 @@ class Config:
     night_start_hour: int   # start of night window (e.g. 23)
     night_end_hour: int     # end of night window / wake hour (e.g. 7)
     escalation_snooze_count: int
+    daily_summary_hour: int  # hour (0-23) in configured timezone for daily done summary
     timezone: str  # IANA timezone name, e.g. "Europe/Moscow"
     google_tasks_token_path: Optional[Path]  # None = Google Tasks sync disabled
 
@@ -28,6 +29,7 @@ class Config:
             ("snooze_morning_hour", self.snooze_morning_hour),
             ("night_start_hour", self.night_start_hour),
             ("night_end_hour", self.night_end_hour),
+            ("daily_summary_hour", self.daily_summary_hour),
         ]:
             if not 0 <= val <= 23:
                 raise ValueError(f"{name} must be 0-23, got {val}")
@@ -51,6 +53,7 @@ def load_config() -> Config:
         night_start_hour=int(os.getenv("NIGHT_START_HOUR", "23")),
         night_end_hour=int(os.getenv("NIGHT_END_HOUR", "7")),
         escalation_snooze_count=int(os.getenv("ESCALATION_SNOOZE_COUNT", "3")),
+        daily_summary_hour=int(os.getenv("DAILY_SUMMARY_HOUR", "22")),
         timezone=os.getenv("TIMEZONE", "Europe/Moscow"),
         google_tasks_token_path=Path(p) if (p := os.getenv("GOOGLE_TASKS_TOKEN_PATH")) else None,
     )
