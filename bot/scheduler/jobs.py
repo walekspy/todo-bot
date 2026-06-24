@@ -45,9 +45,9 @@ async def task_reminder_job(
                 },
             )
         return
-    # Recurring task whose remind_at is significantly in the past
-    # (e.g. after a long restart). Allow ±5 min grace for normal scheduling jitter.
-    if task.recurrence and task.remind_at and task.remind_at < now - timedelta(minutes=5):
+    # Recurring task whose remind_at is from a previous day (not today).
+    # Use date comparison so a task due earlier today still fires even if late.
+    if task.recurrence and task.remind_at and task.remind_at.date() < now.date():
         from croniter import croniter
         from zoneinfo import ZoneInfo
         tz = ZoneInfo(config.timezone)
