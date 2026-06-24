@@ -147,7 +147,9 @@ def setup_callbacks_router(
             try:
                 tz = ZoneInfo(config.timezone)
                 now = datetime.now(tz)
-                base = task.remind_at.astimezone(tz) if task.remind_at else now
+                # Use now as base so we don't skip a day when remind_at was
+                # already advanced by the past-due logic.
+                base = now
                 cron = croniter(task.recurrence, base)
                 next_dt = cron.get_next(datetime)
                 # If next_dt is in the past (edge case: cron pattern matched
