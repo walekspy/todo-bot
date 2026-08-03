@@ -31,7 +31,8 @@ async def test_send_task_reminder_sends_message(mock_bot, config):
 
 @pytest.mark.asyncio
 async def test_send_task_reminder_escalation_after_snoozes(mock_bot, config):
-    task = make_task(snooze_count=3)
+    """Escalation menu only appears in group chats (negative chat_id)."""
+    task = make_task(chat_id=-1001234567890, snooze_count=3)
     await send_task_reminder(mock_bot, task, config)
     kwargs = mock_bot.send_message.call_args.kwargs
     assert "откладывалась" in kwargs["text"]
@@ -40,6 +41,20 @@ async def test_send_task_reminder_escalation_after_snoozes(mock_bot, config):
     assert markup is not None
     first_button = markup.inline_keyboard[0][0]
     assert first_button.callback_data.startswith("escalate:")
+
+
+@pytest.mark.asyncio
+async def test_send_task_reminder_no_escalation_in_dm(mock_bot, config):
+    """In DM (positive chat_id) escalation menu is not shown, even after many snoozes."""
+    task = make_task(chat_id=200, snooze_count=5)
+    await send_task_reminder(mock_bot, task, config)
+    kwargs = mock_bot.send_message.call_args.kwargs
+    assert "откладывалась" not in kwargs["text"]
+    # regular reminder keyboard, not escalation
+    markup = kwargs["reply_markup"]
+    assert markup is not None
+    first_button = markup.inline_keyboard[0][0]
+    assert not first_button.callback_data.startswith("escalate:")
 
 
 @pytest.mark.asyncio
@@ -80,9 +95,10 @@ async def test_reminder_falls_back_to_chat_id_when_notify_none(mock_bot, config)
 
 @pytest.mark.asyncio
 async def test_reminder_routes_to_notify_chat_for_escalation(mock_bot, config):
-    """Even escalated reminders (snooze_count >= threshold) go to notify_chat_id."""
-    task = make_task(chat_id=200, notify_chat_id=300, snooze_count=5)
+    """Even escalated reminders (snooze_count >= threshold) go to notify_chat_id.
+    Uses a negative chat_id (group) so escalation menu is shown."""
+    task = make_task(chat_id=-1001234567890, notify_chat_id=-1009876543210, snooze_count=5)
     await send_task_reminder(mock_bot, task, config)
     kwargs = mock_bot.send_message.call_args.kwargs
-    assert kwargs["chat_id"] == 300
+    assert kwargs["chat_id"] == -1009876543210
     assert "откладывалась" in kwargs["text"]
