@@ -13,6 +13,7 @@ def config():
         llm_provider="groq",
         llm_api_key="test_key",
         llm_model="llama-3.3-70b-versatile",
+        llm_fallback_key="",
         database_path=Path(":memory:"),
         gdrive_service_account_json=Path("credentials/service_account.json"),
         gdrive_backup_folder_id="test_folder",
@@ -21,6 +22,7 @@ def config():
         night_start_hour=23,
         night_end_hour=7,
         escalation_snooze_count=3,
+        daily_summary_hour=22,
         timezone="UTC",
         google_tasks_token_path=None,
     )

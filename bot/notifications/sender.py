@@ -19,14 +19,19 @@ async def send_task_reminder(bot: Bot, task: Task, config: Config) -> None:
     if task.assignee_username:
         text += f"\n👤 @{task.assignee_username}"
 
-    if task.snooze_count >= config.escalation_snooze_count:
+    # Telegram DM chat_ids are positive, groups are negative.
+    # Escalation menu (priority/reassign) only makes sense in group chats.
+    target_chat_id = task.notify_chat_id or task.chat_id
+    is_private = target_chat_id > 0
+
+    if task.snooze_count >= config.escalation_snooze_count and not is_private:
         markup = escalation_keyboard(task.id)
         text += f"\n\n⚠️ Задача откладывалась {task.snooze_count} раз. Изменить?"
     else:
         markup = reminder_keyboard(task.id)
 
     await bot.send_message(
-        chat_id=task.notify_chat_id or task.chat_id,
+        chat_id=target_chat_id,
         text=text,
         parse_mode="HTML",
         reply_markup=markup,
