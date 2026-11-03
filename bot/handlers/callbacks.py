@@ -32,12 +32,11 @@ def setup_callbacks_router(
     # ── helpers ────────────────────────────────────────────────────────
 
     async def _check_assignee(callback: CallbackQuery, task: Task) -> bool:
-        """Return True if caller is allowed to action this task. Show alert otherwise."""
-        if task.assignee_id and callback.from_user.id != task.assignee_id:
-            await callback.answer(
-                "Эта задача назначена другому участнику.", show_alert=True
-            )
-            return False
+        """Anyone may action a task (owner, assignee or other participant).
+
+        Restriction removed 2026-11-03 by Alexey's request: owner could not
+        close tasks assigned to another participant.
+        """
         return True
 
     # ── Confirmation callbacks ──────────────────────────────────────────
