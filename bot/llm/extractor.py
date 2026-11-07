@@ -49,7 +49,7 @@ Return ONLY the JSON array. No explanation, no chat, no "Готово"."""
 _LEADING_PREPS = ("в ", "на ", "во ", "к ", "до ")
 _TIME_RE = re.compile(r'\b(\d{1,2}\s*:\s*\d{2})\b')
 _HHMM_RE = re.compile(r'^(\d{1,2}):(\d{2})$')
-_DDMM_HHMM_RE = re.compile(r'^(\d{1,2})\.(\d{1,2})(?:\s+(\d{1,2})(?::(\d{2}))?)?$')
+_DDMM_HHMM_RE = re.compile(r'^(\d{1,2})\.(\d{1,2})(?:\s*(?:в|at)?\s*(\d{1,2})(?::(\d{2}))?)?$', re.IGNORECASE)
 
 # Imperative patterns that confuse the LLM into acting like an assistant
 _IMPERATIVE_RE = re.compile(

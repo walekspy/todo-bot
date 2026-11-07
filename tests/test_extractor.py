@@ -89,6 +89,30 @@ def test_parse_time_invalid_returns_none():
     assert result is None
 
 
+def test_parse_time_ddmm_with_preposition():
+    """'DD.MM в HH:MM' — в-connector between date and time must not break the fast path."""
+    result = _parse_time("09.11 в 18:30", "Asia/Vladivostok")
+    assert result is not None
+    assert result.day == 9
+    assert result.month == 11
+    assert result.hour == 18
+    assert result.minute == 30
+
+
+def test_parse_time_ddmm_bare_date_keeps_default_hours():
+    """'DD.MM' without time resolves to 09:00; bare 'DD.MM HH' also works."""
+    result = _parse_time("09.11", "Asia/Vladivostok")
+    assert result is not None
+    assert result.day == 9
+    assert result.month == 11
+    assert result.hour == 9
+    assert result.minute == 0
+
+    result2 = _parse_time("09.11 в 18", "Asia/Vladivostok")
+    assert result2.hour == 18
+    assert result2.minute == 0
+
+
 def test_parse_time_bare_hhmm():
     """Bare 'HH:MM' is always resolved to a future datetime at that time."""
     result = _parse_time("12:50", "Asia/Vladivostok")
